@@ -1,0 +1,194 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, to surface drift when nothing merges: a new composureCDK or
+  # aws-cdk-lib release can break the lowest-supported job without a PR here.
+  schedule:
+    - cron: "23 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  # The checks on the workflows themselves, as their own job so a workflow
+  # problem shows as **Workflows** failing.
+  workflows:
+    name: Workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      # No `npm ci`: only actionlint is needed, at the devDependency's version
+      # (which Dependabot keeps current). shellcheck is preinstalled on
+      # ubuntu-latest; actionlint uses it for the `run:` blocks.
+      - name: Lint workflows
+        run: npx -y "@kjanat/actionlint@$(node -p 'require("./package.json").devDependencies["@kjanat/actionlint"]')"
+
+      # Hash-pinned in .github/zizmor/requirements.txt, which Dependabot keeps
+      # current. A venv because the runner's system Python refuses pip
+      # installs (PEP 668).
+      - name: Install zizmor
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zizmor"
+          "$RUNNER_TEMP/zizmor/bin/pip" install --disable-pip-version-check --require-hashes --no-deps -r .github/zizmor/requirements.txt
+          echo "$RUNNER_TEMP/zizmor/bin" >> "$GITHUB_PATH"
+
+      # GH_TOKEN turns on zizmor's online audits.
+      - name: Audit workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor .github/workflows .github/dependabot.yml
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: runtime, development
+
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # One step, so CI, the pre-push hook and release.yml run the same gates.
+      - name: Verify
+        run: npm run verify
+
+      # Packed once here and installed by every Consumer leg.
+      - name: Pack
+        run: |
+          mkdir -p dist-pack
+          npm pack --pack-destination dist-pack
+
+      - name: Upload package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package
+          path: dist-pack/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Installs Verify's tarball into a fresh project on each supported Node,
+  # with peers checked strictly; see scripts/consumer-smoke.mjs.
+  consumer:
+    name: Consumer (Node ${{ matrix.node-version }})
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22, 24, 26]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Download package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package
+          path: dist-pack
+
+      - name: Check the package as a consumer
+        run: npm run check:consumer -- dist-pack/*.tgz
+
+  # Typechecks and tests against the lowest versions the peer ranges admit;
+  # see scripts/lowest-supported.mjs.
+  lowest-supported:
+    name: Lowest supported peers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # No --legacy-peer-deps: a peer conflict at the floor is the bug this
+      # job exists to find. Installing outside the lockfile is the point, so
+      # zizmor's adhoc-packages finding is suppressed for this step.
+      - name: Install the lowest supported peers
+        run: | # zizmor: ignore[adhoc-packages]
+          mapfile -t specs < <(node scripts/lowest-supported.mjs)
+          npm install --no-save --no-audit --no-fund "${specs[@]}"
+          npm ls --depth=0 "${specs[@]%@*}"
+
+      # Vitest does not type-check: a type-only API newer than a floor would
+      # otherwise pass here and fail in a consumer's tsc.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+  # The one check the `main` ruleset requires. always() rather than
+  # !cancelled(): a cancelled run must fail this check, because a required
+  # check that is skipped counts as passing.
+  result:
+    name: CI
+    if: always()
+    needs:
+      - workflows
+      - dependency-review
+      - verify
+      - consumer
+      - lowest-supported
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed or be skipped
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::A job that CI needs failed or was cancelled; see the jobs above."
+          exit 1

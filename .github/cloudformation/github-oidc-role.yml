@@ -1,0 +1,239 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  GitHub Actions OIDC role for composurecdk-stream-dlq's spike and deploy test.
+  Deploy this stack once in the sandbox account before running a workflow that
+  deploys. IAM is global, so one deployment covers every region.
+
+  The account already has a GitHub OIDC provider (composureCDK's role created
+  it), and an account allows only one, so pass its ARN:
+
+    aws cloudformation deploy \
+      --template-file .github/cloudformation/github-oidc-role.yml \
+      --stack-name composure-labs-stream-dlq-github-oidc \
+      --parameter-overrides \
+        GitHubOrg=composure-labs \
+        RepoName=composurecdk-stream-dlq \
+        OIDCProviderArn=arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com \
+      --capabilities CAPABILITY_NAMED_IAM
+    aws cloudformation update-termination-protection \
+      --stack-name composure-labs-stream-dlq-github-oidc \
+      --enable-termination-protection
+
+  Then set the RoleArn output as the `AWS_ROLE_ARN` variable, and the region
+  as `AWS_REGION`, on the repository's `sandbox` environment.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: composure-labs
+    Description: GitHub organisation that owns the repository.
+
+  RepoName:
+    Type: String
+    Default: composurecdk-stream-dlq
+    Description: GitHub repository name.
+
+  OIDCProviderArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of the account's existing GitHub OIDC provider. Leave blank only in
+      an account that has none; only one provider per account is allowed.
+
+Conditions:
+  CreateOIDCProvider: !Equals [!Ref OIDCProviderArn, ""]
+
+Resources:
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-actions-composure-labs-stream-dlq
+      Description: Assumed by GitHub Actions to deploy and test composurecdk-stream-dlq stacks
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateOIDCProvider
+                - !Ref GitHubOIDCProvider
+                - !Ref OIDCProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # Only jobs running in the `sandbox` environment, which the
+                # repository can gate with reviewers or branch rules.
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrg}/${RepoName}:environment:sandbox
+
+  # Every stack this repo deploys is named `ComposureLabs-StreamDlq-*`. CDK
+  # derives physical names from the stack name when none is given, so tables,
+  # queues, functions and log groups carry that prefix, and S3 buckets carry
+  # its lowercased form. That prefix is the security boundary here: it is
+  # narrower than composureCDK's role, which scopes several services
+  # account-wide. Resource creation runs under the CDK bootstrap roles
+  # (assumed below), not this role; this role only deploys, then drives and
+  # inspects the stacks for the spike and the deploy test.
+  DeployPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: github-actions-composure-labs-stream-dlq
+      Description: Permissions for composurecdk-stream-dlq's spike and deploy test
+      Roles:
+        - !Ref DeployRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # CDK CLI: bootstrap version lookup and the deploy / file-publishing
+          # / lookup roles, which do the actual work.
+          - Sid: CDKBootstrapSSM
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource:
+              - !Sub arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/cdk-bootstrap/*
+          - Sid: CDKBootstrapRoles
+            Effect: Allow
+            Action:
+              - sts:AssumeRole
+              - iam:PassRole
+              - iam:GetRole
+            Resource:
+              - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-*
+
+          # CloudFormation: read and delete this repo's stacks directly (for
+          # the cleanup job and for inspecting outputs); deploys go through the
+          # CDK deploy role.
+          - Sid: CloudFormation
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:ListStackResources
+              - cloudformation:GetTemplate
+              - cloudformation:DeleteStack
+            Resource:
+              - !Sub arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/ComposureLabs-StreamDlq-*
+          - Sid: CloudFormationList
+            Effect: Allow
+            Action:
+              - cloudformation:ListStacks
+            Resource: "*"
+
+          # Driving the scenarios: write a record to trigger the stream,
+          # invoke the processor directly (re-invoke and replay), and flip the
+          # processor's failure mode through its environment.
+          - Sid: DynamoDBWrite
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:DescribeTable
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/ComposureLabs-StreamDlq-*
+          - Sid: LambdaDrive
+            Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+              - lambda:GetFunction
+              - lambda:GetFunctionConfiguration
+              - lambda:UpdateFunctionConfiguration
+            Resource:
+              - !Sub arn:${AWS::Partition}:lambda:*:${AWS::AccountId}:function:ComposureLabs-StreamDlq-*
+          # A mapping's ARN carries a UUID, not the function name, and
+          # ListEventSourceMappings supports no resource-level permissions.
+          # Both are read-only.
+          - Sid: LambdaEventSourceMappings
+            Effect: Allow
+            Action:
+              - lambda:GetEventSourceMapping
+            Resource:
+              - !Sub arn:${AWS::Partition}:lambda:*:${AWS::AccountId}:event-source-mapping:*
+          - Sid: LambdaEventSourceMappingsList
+            Effect: Allow
+            Action:
+              - lambda:ListEventSourceMappings
+            Resource: "*"
+
+          # Observing the scenarios: the failure objects, the signal queue,
+          # the alarms and the logs.
+          - Sid: S3Inspect
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:ListBucketVersions
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketNotification
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::composurelabs-streamdlq-*
+              - !Sub arn:${AWS::Partition}:s3:::composurelabs-streamdlq-*/*
+          - Sid: SQSInspect
+            Effect: Allow
+            Action:
+              - sqs:GetQueueAttributes
+              - sqs:GetQueueUrl
+              - sqs:ReceiveMessage
+              - sqs:ChangeMessageVisibility
+              - sqs:DeleteMessage
+              - sqs:PurgeQueue
+            Resource:
+              - !Sub arn:${AWS::Partition}:sqs:*:${AWS::AccountId}:ComposureLabs-StreamDlq-*
+          # Reading CMK-encrypted objects and messages (spike scenario 3). Only
+          # through S3 and SQS, so the role cannot decrypt arbitrary data.
+          - Sid: KMSDecryptViaService
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource:
+              - !Sub arn:${AWS::Partition}:kms:*:${AWS::AccountId}:key/*
+            Condition:
+              StringLike:
+                kms:ViaService:
+                  - s3.*.amazonaws.com
+                  - sqs.*.amazonaws.com
+          # CloudWatch read APIs do not support resource-level permissions.
+          - Sid: CloudWatchRead
+            Effect: Allow
+            Action:
+              - cloudwatch:DescribeAlarms
+              - cloudwatch:DescribeAlarmHistory
+              - cloudwatch:GetMetricData
+            Resource: "*"
+          - Sid: LogsRead
+            Effect: Allow
+            Action:
+              - logs:FilterLogEvents
+              - logs:GetLogEvents
+            Resource:
+              # Default Lambda log groups, and the explicit log groups
+              # composureCDK's FunctionBuilder creates (named from the stack).
+              - !Sub arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/lambda/ComposureLabs-StreamDlq-*
+              - !Sub arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:ComposureLabs-StreamDlq-*
+
+          # Cleanup: failure buckets are RETAINed, so deleting a stack leaves
+          # them behind. The cleanup job empties and deletes them.
+          - Sid: S3Cleanup
+            Effect: Allow
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+              - s3:DeleteBucket
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::composurelabs-streamdlq-*
+              - !Sub arn:${AWS::Partition}:s3:::composurelabs-streamdlq-*/*
+
+Outputs:
+  RoleArn:
+    Description: Set as the AWS_ROLE_ARN variable on the repository's sandbox environment
+    Value: !GetAtt DeployRole.Arn

@@ -1,0 +1,5 @@
+# Runs every gate. There is no task cache here, so keep an eye on the time it
+# prints; CONTRIBUTING.md#before-you-open-a-pull-request has the budget.
+start=$(date +%s)
+npm run verify
+echo "verify took $(($(date +%s) - start))s"
