@@ -5,6 +5,11 @@ name: Release
 # never needs to push past the `main` ruleset. The npm package's trusted
 # publisher is configured for this file name and the `npm` environment —
 # renaming either breaks publishing.
+#
+# Releases are staged: this workflow submits the version for review and drafts
+# the GitHub Release. Nothing is public until a maintainer approves it with 2FA
+# (`npm stage approve <stage-id>`, or Staged Packages on npmjs.com), then
+# publishes the draft, which creates the tag. See CONTRIBUTING.md#releasing.
 
 on:
   workflow_dispatch:
@@ -23,12 +28,12 @@ concurrency:
 
 jobs:
   publish:
-    name: Publish to npm
+    name: Stage on npm
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm
     permissions:
-      contents: write # Create the tag and the GitHub Release
+      contents: write # Draft the GitHub Release
       id-token: write # npm trusted publishing (OIDC) and provenance
     steps:
       - name: Checkout
@@ -44,7 +49,8 @@ jobs:
           package-manager-cache: false
 
       # `npm version` rejects non-semver itself, but accepts a leading `v`,
-      # which would then produce a `vv…` tag.
+      # which would then produce a `vv…` tag. A draft counts as released, so a
+      # version can't be staged twice.
       - name: Validate version
         env:
           VERSION: ${{ inputs.version }}
@@ -70,14 +76,21 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: npm version "$VERSION" --no-git-tag-version
 
-      # Trusted publishing needs npm >= 11.5.1; it generates provenance
-      # without --provenance. Publish before creating the Release, so a
-      # Release always has a package behind it.
-      - name: Publish to npm
-        run: npx -y npm@11 publish
+      # Staged publishing needs npm >= 11.15.0. The trusted publisher allows
+      # only `npm stage publish`, so even a compromised run can't publish.
+      - name: Stage on npm
+        run: npx -y npm@^11.15.0 stage publish
 
-      - name: Create GitHub Release
+      # A draft creates no tag; publishing it after npm approval does.
+      - name: Draft GitHub Release
         env:
           VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
+        run: |
+          gh release create "v$VERSION" --draft --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
+          {
+            echo "### v$VERSION is staged, not published"
+            echo
+            echo "1. \`npm stage list @composure-labs/composurecdk-stream-dlq\`, then \`npm stage approve <stage-id>\` (2FA)."
+            echo "2. Publish the draft release v$VERSION, which creates the tag."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -44,7 +44,12 @@ Workflows that deploy assume `github-actions-composure-labs-stream-dlq` through 
 
 ## Releasing
 
-Maintainers run the **Release** workflow by hand with the version to publish. It runs `verify`, publishes to npm through trusted publishing (OIDC, with provenance), then tags and creates the GitHub Release. The version lives in the tag and on npm; `package.json` on `main` stays at `0.0.0`.
+Maintainers run the **Release** workflow by hand with the version to publish. It runs `verify`, then submits the version to npm with [staged publishing](https://docs.npmjs.com/staged-publishing/) through trusted publishing (OIDC), and drafts the GitHub Release. Nothing is public yet. To finish the release:
+
+1. Check the staged tarball (`npm stage list @composure-labs/composurecdk-stream-dlq`, then `npm stage download <stage-id>`) and approve it with 2FA: `npm stage approve <stage-id>`, or **Approve** under _Staged Packages_ on npmjs.com.
+2. Publish the draft GitHub Release, which creates the `v<version>` tag.
+
+The trusted publisher allows only `npm stage publish`, so CI can never publish on its own. The version lives in the tag and on npm; `package.json` on `main` stays at `0.0.0`.
 
 ## License
 
