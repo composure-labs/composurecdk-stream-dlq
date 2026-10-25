@@ -1,6 +1,6 @@
-import { Duration, Stack } from "aws-cdk-lib";
+import { Annotations, Duration, Stack, Token } from "aws-cdk-lib";
+import type { Alarm } from "aws-cdk-lib/aws-cloudwatch";
 import type { CfnBucket } from "aws-cdk-lib/aws-s3";
-import type { CfnQueue } from "aws-cdk-lib/aws-sqs";
 import type { IConstruct } from "constructs";
 import { compose, type Lifecycle, type Ref, ref } from "@composurecdk/core";
 import { type ITaggedBuilder, taggedBuilder } from "@composurecdk/cloudformation";
@@ -12,21 +12,25 @@ import {
 } from "@composurecdk/events";
 import type { BucketBuilderResult, IBucketBuilder } from "@composurecdk/s3";
 import type { IQueueBuilder, QueueBuilderResult } from "@composurecdk/sqs";
-import {
-  failureBucketDefaults,
-  signalQueueDefaults,
-  signalRuleDefaults,
-  withSignalQueueAlarms,
-  withSignalRuleAlarms,
-} from "./defaults.js";
+import { captureAlarms, type StreamDlqCaptureAlarmConfig } from "./capture-alarms.js";
+import { failureBucketDefaults, signalQueueDefaults, signalRuleDefaults } from "./defaults.js";
+import { signalQueueRetentionSeconds } from "./signal-queue.js";
 
 /**
- * Configuration for {@link createStreamDlqCaptureBuilder}. Each prop is a
- * callback that receives the component's builder, already set up with
- * capture's defaults, and returns it with the consumer's changes. An omitted
- * callback keeps the defaults.
+ * Configuration for {@link createStreamDlqCaptureBuilder}.
+ *
+ * `recommendedAlarms` tunes capture's own alarms. The `bucket`, `queue` and
+ * `rule` callbacks are the lower-level route: each receives the component's
+ * builder, already set up with capture's defaults, and returns it with the
+ * consumer's changes.
  */
 export interface StreamDlqCaptureBuilderProps {
+  /**
+   * Capture's alarms: failures waiting, failures ageing and signals
+   * undelivered. `false` turns them all off.
+   */
+  recommendedAlarms?: StreamDlqCaptureAlarmConfig | false;
+
   /**
    * Customise the failure bucket. Capture keeps EventBridge on, whatever the
    * callback sets, and every expiry rule must outlast the signal queue's
@@ -34,25 +38,34 @@ export interface StreamDlqCaptureBuilderProps {
    */
   bucket?: (builder: IBucketBuilder) => IBucketBuilder;
 
-  /** Customise the signal queue, a composureCDK `"dlq"`-role queue. */
+  /**
+   * Customise the signal queue, a composureCDK `"dlq"`-role queue. Its own
+   * recommended alarms are off because capture's replace them; turning them
+   * back on duplicates capture's. Add other alarms with `addAlarm`.
+   */
   queue?: (builder: IQueueBuilder<"dlq">) => IQueueBuilder<"dlq">;
 
   /**
    * Customise the signal rule. Capture sets its event pattern and its queue
-   * target after the callback. Alarms set with `recommendedAlarms` override
-   * capture's field by field, as they do on the queue.
+   * target after the callback. Its own recommended alarms are off, as on the
+   * queue.
    */
   rule?: (builder: IRuleBuilder) => IRuleBuilder;
 }
 
 /** Everything the capture builder creates, as each component's builder returns it. */
 export interface StreamDlqCaptureResult {
-  /** The failure bucket, its access-logs bucket and its alarms. */
+  /** The failure bucket and its access-logs bucket. */
   bucket: BucketBuilderResult;
-  /** The signal queue and its depth and age alarms. */
+  /** The signal queue. */
   queue: QueueBuilderResult;
-  /** The signal rule, its queue target and its `failedInvocations` alarm. */
+  /** The signal rule and its queue target. */
   rule: RuleBuilderResult;
+  /**
+   * Capture's alarms, keyed `failuresWaiting`, `failuresAgeing` and
+   * `signalUndelivered`. No actions are configured.
+   */
+  alarms: Record<string, Alarm>;
 }
 
 /**
@@ -75,9 +88,9 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
     return compose(
       {
         bucket: configured(failureBucketDefaults(), this.props.bucket).eventBridgeEnabled(true),
-        queue: configured(signalQueueDefaults(), this.props.queue, withSignalQueueAlarms),
+        queue: configured(signalQueueDefaults(), this.props.queue),
         rule: resolvingEventPattern(
-          configured(signalRuleDefaults(), this.props.rule, withSignalRuleAlarms).addTarget(
+          configured(signalRuleDefaults(), this.props.rule).addTarget(
             "queue",
             sqsTarget(ref<QueueBuilderResult>("queue").get("queue")),
           ),
@@ -87,8 +100,12 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
             detail: { bucket: { name: [bucket.bucketName] } },
           })),
         ),
+        alarms: captureAlarms(this.props.recommendedAlarms, {
+          queue: ref<QueueBuilderResult>("queue").get("queue"),
+          rule: ref<RuleBuilderResult>("rule").get("rule"),
+        }),
       },
-      { bucket: [], queue: [], rule: ["bucket", "queue"] },
+      { bucket: [], queue: [], rule: ["bucket", "queue"], alarms: ["queue", "rule"] },
     )
       .afterBuild(checkLifetimes)
       .build(scope, id, context);
@@ -96,15 +113,14 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
 }
 
 /**
- * Capture's `defaults`, then the consumer's `configure` callback, then
- * `finish`, on a copy so capture owns whatever it changes from here on.
+ * The consumer's callback applied to capture's defaults, copied so capture
+ * owns what it then changes.
  */
 function configured<B extends { copy(): B }>(
   defaults: B,
   configure: ((builder: B) => B) | undefined,
-  finish: (builder: B) => B = (builder) => builder,
 ): B {
-  return finish((configure?.(defaults) ?? defaults).copy());
+  return (configure?.(defaults) ?? defaults).copy();
 }
 
 /**
@@ -129,18 +145,25 @@ function resolvingEventPattern(
  * before the signal queue's retention ends, so a failure would be gone while
  * its signal is still waiting (architecture D5). Reads the resolved L1
  * properties, so it checks what will deploy. Rules with a filter are checked
- * too, since one may match failures.
+ * too, since one may match failures. A token retention can't be compared, so
+ * the check is skipped with a warning.
  */
 function checkLifetimes(
   _scope: IConstruct,
   _id: string,
   { bucket, queue }: Pick<StreamDlqCaptureResult, "bucket" | "queue">,
 ): void {
-  const stack = Stack.of(queue.queue);
-  const retention = Duration.seconds(
-    stack.resolve((queue.queue.node.defaultChild as CfnQueue).messageRetentionPeriod) as number,
-  );
-  const lifecycle = stack.resolve(
+  const retentionSeconds = signalQueueRetentionSeconds(queue.queue);
+  if (Token.isUnresolved(retentionSeconds)) {
+    Annotations.of(queue.queue).addWarningV2(
+      "@composure-labs/composurecdk-stream-dlq:lifetime-check-token-retention",
+      "Stream DLQ capture can't check that the failure bucket's expiry outlasts the signal " +
+        "queue's retention, because the retention is an unresolved token.",
+    );
+    return;
+  }
+  const retention = Duration.seconds(retentionSeconds);
+  const lifecycle = Stack.of(bucket.bucket).resolve(
     (bucket.bucket.node.defaultChild as CfnBucket).lifecycleConfiguration,
   ) as { rules?: CfnBucket.RuleProperty[] } | undefined;
 
@@ -161,7 +184,7 @@ function checkLifetimes(
 /**
  * Creates a builder for stream failure capture. An event source mapping writes
  * each failed batch to the failure bucket; the bucket's `Object Created` event
- * reaches the signal queue through EventBridge, and the queue's alarms raise
+ * reaches the signal queue through EventBridge, and capture's alarms raise
  * it. Name the bucket as the mapping's on-failure destination.
  *
  * The bucket is RETAINed, so keep `id` stable. The README lists what is built.

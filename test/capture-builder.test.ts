@@ -1,5 +1,5 @@
-import { App, Duration, Stack } from "aws-cdk-lib";
-import { Match, Template } from "aws-cdk-lib/assertions";
+import { App, CfnParameter, Duration, Stack } from "aws-cdk-lib";
+import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { compose } from "@composurecdk/core";
 import { assertCopyPreservesState } from "@composurecdk/core/testing";
@@ -120,13 +120,15 @@ describe("createStreamDlqCaptureBuilder", () => {
       });
     });
 
-    it("creates the depth, age and FailedInvocations alarms, and no others", () => {
-      expect(Object.keys(result.queue.alarms).sort()).toEqual([
-        "approximateAgeOfOldestMessage",
-        "approximateNumberOfMessagesVisible",
+    it("creates its own three alarms, and none from the component builders", () => {
+      expect(Object.keys(result.alarms).sort()).toEqual([
+        "failuresAgeing",
+        "failuresWaiting",
+        "signalUndelivered",
       ]);
-      expect(Object.keys(result.rule.alarms)).toEqual(["failedInvocations"]);
-      expect(Object.keys(result.bucket.alarms)).toEqual([]);
+      expect(result.bucket.alarms).toEqual({});
+      expect(result.queue.alarms).toEqual({});
+      expect(result.rule.alarms).toEqual({});
       template.resourceCountIs("AWS::CloudWatch::Alarm", 3);
     });
 
@@ -140,6 +142,7 @@ describe("createStreamDlqCaptureBuilder", () => {
       template.hasResourceProperties("AWS::CloudWatch::Alarm", {
         MetricName: "ApproximateAgeOfOldestMessage",
         Threshold: 907_200,
+        ComparisonOperator: "GreaterThanOrEqualToThreshold",
       });
     });
   });
@@ -158,36 +161,86 @@ describe("createStreamDlqCaptureBuilder", () => {
     });
 
     it("scales the age alarm to a customised retention", () => {
-      synth(
+      const result = build(
         createStreamDlqCaptureBuilder().queue((q) => q.retentionPeriod(Duration.days(7))),
-      ).template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-        MetricName: "ApproximateAgeOfOldestMessage",
-        Threshold: 453_600,
-      });
+      );
+      expect(result.alarms.failuresAgeing.node.defaultChild).toMatchObject({ threshold: 453_600 });
     });
 
     it("merges the consumer's alarm config with capture's, field by field", () => {
       const result = build(
-        createStreamDlqCaptureBuilder()
-          .queue((q) => q.recommendedAlarms({ approximateAgeOfOldestMessage: false }))
-          .rule((r) => r.recommendedAlarms({ failedInvocations: { threshold: 2 } })),
+        createStreamDlqCaptureBuilder().recommendedAlarms({
+          failuresWaiting: false,
+          failuresAgeing: false,
+          signalUndelivered: { threshold: 2 },
+        }),
       );
-      expect(Object.keys(result.queue.alarms)).toEqual(["approximateNumberOfMessagesVisible"]);
-      expect(result.rule.alarms.failedInvocations.node.defaultChild).toMatchObject({
+      expect(Object.keys(result.alarms)).toEqual(["signalUndelivered"]);
+      expect(result.alarms.signalUndelivered.node.defaultChild).toMatchObject({
         threshold: 2,
         evaluationPeriods: 1,
         treatMissingData: "notBreaching",
       });
     });
 
-    it("turns every alarm off when the consumer passes false", () => {
+    it.each([false, { enabled: false }] as const)(
+      "turns every alarm off with %o",
+      (recommendedAlarms) => {
+        const { result, template } = synth(
+          createStreamDlqCaptureBuilder().recommendedAlarms(recommendedAlarms),
+        );
+        expect(result.alarms).toEqual({});
+        template.resourceCountIs("AWS::CloudWatch::Alarm", 0);
+      },
+    );
+
+    it("keeps an alarm a component callback adds beside capture's", () => {
       const result = build(
-        createStreamDlqCaptureBuilder()
-          .queue((q) => q.recommendedAlarms(false))
-          .rule((r) => r.recommendedAlarms(false)),
+        createStreamDlqCaptureBuilder().queue((q) =>
+          q.addAlarm("inFlight", (alarm) =>
+            alarm
+              .metric((queue) => queue.metricApproximateNumberOfMessagesNotVisible())
+              .threshold(10)
+              .greaterThan(),
+          ),
+        ),
       );
-      expect(result.queue.alarms).toEqual({});
-      expect(result.rule.alarms).toEqual({});
+      expect(Object.keys(result.queue.alarms)).toEqual(["inFlight"]);
+      expect(Object.keys(result.alarms)).toHaveLength(3);
+    });
+
+    it("takes SQS's 4-day retention for a queue that sets none", () => {
+      const result = build(
+        createStreamDlqCaptureBuilder().queue((q) => q.retentionPeriod(undefined)),
+      );
+      expect(result.alarms.failuresAgeing.node.defaultChild).toMatchObject({ threshold: 259_200 });
+    });
+
+    describe("with a token retention", () => {
+      function tokenRetention(builder: IStreamDlqCaptureBuilder) {
+        const stack = new Stack(new App(), "Test");
+        const retention = new CfnParameter(stack, "Retention", { type: "Number" });
+        const result = builder
+          .queue((q) => q.retentionPeriod(Duration.seconds(retention.valueAsNumber)))
+          .build(stack, "Failures");
+        return { result, warnings: Annotations.fromStack(stack) };
+      }
+
+      it("skips the age alarm and the lifetime check, with warnings", () => {
+        const { result, warnings } = tokenRetention(createStreamDlqCaptureBuilder());
+        expect(Object.keys(result.alarms).sort()).toEqual(["failuresWaiting", "signalUndelivered"]);
+        warnings.hasWarning("*", Match.stringLikeRegexp("stream failure ageing"));
+        warnings.hasWarning("*", Match.stringLikeRegexp("can't check that the failure bucket"));
+      });
+
+      it("creates the age alarm when the consumer sets its threshold", () => {
+        const { result } = tokenRetention(
+          createStreamDlqCaptureBuilder().recommendedAlarms({
+            failuresAgeing: { threshold: 3_600 },
+          }),
+        );
+        expect(result.alarms.failuresAgeing.node.defaultChild).toMatchObject({ threshold: 3_600 });
+      });
     });
 
     it("tags every resource it creates", () => {
@@ -210,11 +263,11 @@ describe("createStreamDlqCaptureBuilder", () => {
       assertCopyPreservesState({
         factory: () => createStreamDlqCaptureBuilder(),
         configure: (b) => b.bucket((bucket) => bucket.serverAccessLogs(false)),
-        mutate: (b) => b.queue((queue) => queue.recommendedAlarms(false)),
+        mutate: (b) => b.recommendedAlarms(false),
         build: (b) => build(b),
         inspect: (r) => ({
           accessLogs: r.bucket.accessLogsBucket !== undefined,
-          queueAlarms: Object.keys(r.queue.alarms),
+          alarms: Object.keys(r.alarms),
         }),
       });
     });

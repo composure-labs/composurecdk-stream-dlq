@@ -65,16 +65,24 @@ compose(
 
 ## What capture builds
 
-Capture is itself a composed system of three components, built under its `id` like any nested system:
+Capture is itself a composed system of four components, built under its `id` like any nested system:
 
 | Component | What                                                                                                                                                                             |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bucket`  | The failure bucket: versioning off, objects expire after 90 days, EventBridge on, RETAIN, SSE-S3, TLS enforced, public access blocked, and access logs to its own logs bucket    |
 | `queue`   | The signal queue, in composureCDK's `"dlq"` role: 14-day retention, SSE-SQS, 1-minute visibility timeout                                                                         |
 | `rule`    | An EventBridge rule on the default bus: `aws.s3` / `Object Created` / this bucket, targeting the queue, described as "Signals each stream failure written to the failure bucket" |
-| Alarms    | Queue depth > 0; oldest message ≥ 75% of retention; the rule's `FailedInvocations` > 0                                                                                           |
+| `alarms`  | Capture's three alarms (below). The queue's and rule's own composureCDK alarms are off                                                                                           |
 
-The build result returns each component as its composureCDK builder does: `result.bucket` (`bucket`, `accessLogsBucket`, `alarms`), `result.queue` (`queue`, `alarms`) and `result.rule` (`rule`, `targets`, `alarms`).
+The build result returns each component as its composureCDK builder does: `result.bucket` (`bucket`, `accessLogsBucket`, `alarms`), `result.queue` (`queue`, `alarms`) and `result.rule` (`rule`, `targets`, `alarms`). `result.alarms` holds capture's alarms by key:
+
+| Key                 | Fires when                                    | Means                                            |
+| ------------------- | --------------------------------------------- | ------------------------------------------------ |
+| `failuresWaiting`   | Signal queue depth > 0                        | A failure is waiting. Recover it from the bucket |
+| `failuresAgeing`    | Oldest message ≥ 75% of the queue's retention | A signal is close to expiry                      |
+| `signalUndelivered` | The rule's `FailedInvocations` > 0            | A failure was stored but not signalled           |
+
+Each alarm fires on one 1-minute datapoint, with missing data not breaching. If the queue's retention is a token, the age alarm is skipped with a warning unless you set its threshold, and so is the lifetime check below.
 
 **Keep `id` stable.** The bucket is retained and is the only copy of the data, so renaming the component orphans it and creates a new one.
 
@@ -82,16 +90,17 @@ The build result returns each component as its composureCDK builder does: `resul
 
 ## Customising
 
-`.tag(key, value)` tags every resource capture creates. Each component has a callback that receives its builder, already set up with capture's defaults:
+`.tag(key, value)` tags every resource capture creates. `.recommendedAlarms()` tunes capture's alarms: each key's config overrides the defaults field by field, `false` turns that alarm off, and `recommendedAlarms(false)` turns them all off. Each component also has a callback that receives its builder, already set up with capture's defaults:
 
 ```ts
 createStreamDlqCaptureBuilder()
+  .recommendedAlarms({ failuresAgeing: { evaluationPeriods: 5 } })
   .bucket((b) => b.serverAccessLogs(false))
   .queue((q) => q.retentionPeriod(Duration.days(7)))
   .rule((r) => r.description("Orders stream failures"));
 ```
 
-Capture sets the signal path after your callbacks, so they can't remove it: EventBridge on the bucket, and the rule's event pattern and queue target. `build()` throws if any lifecycle rule expires objects before the queue's retention ends, since a failure would be deleted while its signal is still waiting. Alarms you set with `recommendedAlarms` on the queue or the rule override capture's field by field; `recommendedAlarms(false)` turns them all off.
+Capture sets the signal path after your callbacks, so they can't remove it: EventBridge on the bucket, and the rule's event pattern and queue target. `build()` throws if any lifecycle rule expires objects before the queue's retention ends, since a failure would be deleted while its signal is still waiting. The age alarm's threshold follows the queue's retention. The queue's and rule's own `recommendedAlarms` are off because capture's replace them; turning them back on duplicates capture's alarms. Add any other alarm with `addAlarm` in the callback.
 
 ## Operating it
 
