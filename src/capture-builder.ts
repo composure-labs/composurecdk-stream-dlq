@@ -69,19 +69,18 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
   props: Partial<StreamDlqCaptureBuilderProps> = {};
 
   build(scope: IConstruct, id: string, context?: Record<string, object>): StreamDlqCaptureResult {
-    const bucket = configured(failureBucketDefaults(), this.props.bucket);
-    const queue = withSignalQueueAlarms(configured(signalQueueDefaults(), this.props.queue));
-    const rule = withSignalRuleAlarms(configured(signalRuleDefaults(), this.props.rule));
-
-    // The signal path, set after the callbacks so none of it can be removed:
+    // The signal path is set after the callbacks, so none of it can be removed:
     // the bucket publishes its events to EventBridge, and the rule routes this
     // bucket's Object Created events to the queue.
     return compose(
       {
-        bucket: bucket.eventBridgeEnabled(true),
-        queue,
-        rule: withEventPattern(
-          rule.addTarget("queue", sqsTarget(ref<QueueBuilderResult>("queue").get("queue"))),
+        bucket: configured(failureBucketDefaults(), this.props.bucket).eventBridgeEnabled(true),
+        queue: configured(signalQueueDefaults(), this.props.queue, withSignalQueueAlarms),
+        rule: resolvingEventPattern(
+          configured(signalRuleDefaults(), this.props.rule, withSignalRuleAlarms).addTarget(
+            "queue",
+            sqsTarget(ref<QueueBuilderResult>("queue").get("queue")),
+          ),
           ref<BucketBuilderResult>("bucket").map(({ bucket }) => ({
             source: ["aws.s3"],
             detailType: ["Object Created"],
@@ -96,12 +95,16 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
   }
 }
 
-/** The consumer's callback applied to a copy of the defaults, so capture owns what it then changes. */
+/**
+ * Capture's `defaults`, then the consumer's `configure` callback, then
+ * `finish`, on a copy so capture owns whatever it changes from here on.
+ */
 function configured<B extends { copy(): B }>(
   defaults: B,
   configure: ((builder: B) => B) | undefined,
+  finish: (builder: B) => B = (builder) => builder,
 ): B {
-  return (configure?.(defaults) ?? defaults).copy();
+  return finish((configure?.(defaults) ?? defaults).copy());
 }
 
 /**
@@ -110,7 +113,7 @@ function configured<B extends { copy(): B }>(
  * Interim: the rule builder's `eventPattern` can't take a `ref` yet. Once
  * laazyj/composureCDK#637 lands, this becomes `rule.eventPattern(pattern)`.
  */
-function withEventPattern(
+function resolvingEventPattern(
   rule: IRuleBuilder,
   pattern: Ref<NonNullable<RuleBuilderProps["eventPattern"]>>,
 ): Lifecycle<RuleBuilderResult> {
@@ -125,8 +128,8 @@ function withEventPattern(
  * Throws if an enabled expiry rule on the failure bucket deletes objects
  * before the signal queue's retention ends, so a failure would be gone while
  * its signal is still waiting (architecture D5). Reads the resolved L1
- * properties, so it checks what will deploy. Rules with a filter are checked too, since
- * one may match failures.
+ * properties, so it checks what will deploy. Rules with a filter are checked
+ * too, since one may match failures.
  */
 function checkLifetimes(
   _scope: IConstruct,
