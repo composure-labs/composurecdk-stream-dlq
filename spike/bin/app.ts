@@ -8,7 +8,19 @@ const notifyPrefix = app.node.tryGetContext("notifyPrefix") as string | undefine
 // Scenario 6 synthesises Direct alone, under another name, on the floor aws-cdk-lib.
 const floor = app.node.tryGetContext("floor") === "true";
 
-if (floor) {
+const followUp = app.node.tryGetContext("followUp") === "true";
+
+if (followUp) {
+  // Follow-up 1: EventBridge without BucketNotificationsHandler, alone and beside a consumer notification.
+  captureStack(app, "NoHandler", { signal: "eventbridge-native", replay: false });
+  captureStack(app, "NoHandlerShared", {
+    signal: "eventbridge-native",
+    replay: false,
+    consumerNotification: true,
+  });
+  // Follow-up 2: a signal EventBridge cannot deliver.
+  captureStack(app, "SignalFailure", { signal: "eventbridge", replay: false, denyDelivery: true });
+} else if (floor) {
   captureStack(app, "Floor", { signal: "direct", replay: true });
 } else {
   captureStack(app, "Direct", { signal: "direct", replay: true, notifyPrefix });

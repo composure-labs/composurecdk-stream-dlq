@@ -1,13 +1,15 @@
 import { App, CfnOutput, Duration, RemovalPolicy, Stack, Tags } from "aws-cdk-lib";
 import { AttributeType, StreamViewType } from "aws-cdk-lib/aws-dynamodb";
+import { Alarm, ComparisonOperator, Metric, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
 import { Rule } from "aws-cdk-lib/aws-events";
+import { Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { SqsQueue } from "aws-cdk-lib/aws-events-targets";
 import { Key } from "aws-cdk-lib/aws-kms";
 import { Code, Runtime } from "aws-cdk-lib/aws-lambda";
 import { S3OnFailureDestination } from "aws-cdk-lib/aws-lambda-event-sources";
-import { type Bucket, EventType } from "aws-cdk-lib/aws-s3";
+import { type Bucket, CfnBucket, EventType } from "aws-cdk-lib/aws-s3";
 import { SqsDestination } from "aws-cdk-lib/aws-s3-notifications";
-import { type Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
+import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { compose, ref } from "@composurecdk/core";
 import { createTableV2Builder, type TableV2BuilderResult } from "@composurecdk/dynamodb";
 import { createKeyBuilder } from "@composurecdk/kms";
@@ -61,7 +63,16 @@ type SignalQueueBuilder = ReturnType<typeof signalQueue>;
 export function captureStack(
   app: App,
   name: string,
-  options: { signal: "direct" | "eventbridge"; replay: boolean; notifyPrefix?: string },
+  options: {
+    /** `eventbridge-native` turns EventBridge on through CfnBucket, with no custom resource. */
+    signal: "direct" | "eventbridge" | "eventbridge-native";
+    replay: boolean;
+    notifyPrefix?: string;
+    /** A consumer's own notification on the failure bucket, beside ours. */
+    consumerNotification?: boolean;
+    /** Deny EventBridge on the queue, with no retries, to see what a lost signal leaves behind. */
+    denyDelivery?: boolean;
+  },
 ): Stack {
   const stack = newStack(app, name);
   const bucket = failureBucket();
@@ -113,14 +124,59 @@ export function captureStack(
       ...(options.notifyPrefix ? [{ prefix: options.notifyPrefix }] : []),
     );
   } else {
-    new Rule(stack, "FailureObjectCreated", {
+    if (options.signal === "eventbridge-native") {
+      const cfnBucket = failureBucketConstruct.node.defaultChild as CfnBucket;
+      cfnBucket.notificationConfiguration = {
+        eventBridgeConfiguration: { eventBridgeEnabled: true },
+      };
+    }
+    if (options.denyDelivery) {
+      queue.addToResourcePolicy(
+        new PolicyStatement({
+          effect: Effect.DENY,
+          principals: [new ServicePrincipal("events.amazonaws.com")],
+          actions: ["sqs:SendMessage"],
+          resources: [queue.queueArn],
+        }),
+      );
+    }
+    const rule = new Rule(stack, "FailureObjectCreated", {
       eventPattern: {
         source: ["aws.s3"],
         detailType: ["Object Created"],
         detail: { bucket: { name: [failureBucketConstruct.bucketName] } },
       },
-      targets: [new SqsQueue(queue)],
+      targets: [
+        new SqsQueue(
+          queue,
+          options.denyDelivery ? { retryAttempts: 0, maxEventAge: Duration.minutes(1) } : {},
+        ),
+      ],
     });
+    const failedInvocations = new Alarm(stack, "RuleFailedInvocations", {
+      metric: new Metric({
+        namespace: "AWS/Events",
+        metricName: "FailedInvocations",
+        dimensionsMap: { RuleName: rule.ruleName },
+        statistic: "Sum",
+        period: Duration.minutes(1),
+      }),
+      threshold: 0,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+    outputs(stack, { RuleName: rule.ruleName, RuleFailedAlarm: failedInvocations.alarmName });
+  }
+
+  if (options.consumerNotification) {
+    const consumerQueue = new Queue(stack, "ConsumerQueue", { enforceSSL: true });
+    failureBucketConstruct.addEventNotification(
+      EventType.OBJECT_CREATED,
+      new SqsDestination(consumerQueue),
+      { prefix: "consumer/" },
+    );
+    outputs(stack, { ConsumerQueueUrl: consumerQueue.queueUrl });
   }
 
   const fn = results.processor.function;
