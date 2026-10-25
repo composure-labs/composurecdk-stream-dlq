@@ -1,0 +1,81 @@
+name: Release
+
+# Run by hand with the version to publish. The version lives in the tag and on
+# npm, not in a commit: package.json on `main` stays at 0.0.0, so a release
+# never needs to push past the `main` ruleset. The npm package's trusted
+# publisher is configured for this file name and the `npm` environment —
+# renaming either breaks publishing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. 0.1.0 (no leading v)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: write # Create the tag and the GitHub Release
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          # No dependency cache in a job holding publish credentials.
+          package-manager-cache: false
+
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a semver version (no leading v)."
+            exit 1
+          fi
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::v$VERSION is already released."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify
+        run: npm run verify
+
+      - name: Set version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version
+
+      # Trusted publishing needs npm >= 11.5.1; it generates provenance
+      # without --provenance. Publish before creating the Release, so a
+      # Release always has a package behind it.
+      - name: Publish to npm
+        run: npx -y npm@11 publish
+
+      - name: Create GitHub Release
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes

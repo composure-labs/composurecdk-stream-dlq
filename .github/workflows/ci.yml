@@ -1,0 +1,214 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, to surface drift when nothing merges: a new composureCDK or
+  # aws-cdk-lib release can break the lowest-supported job without a PR here.
+  schedule:
+    - cron: "23 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  # The checks on the workflows themselves, as their own job so a workflow
+  # problem shows as **Workflows** failing.
+  workflows:
+    name: Workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # shellcheck is preinstalled on ubuntu-latest; actionlint uses it for
+      # the `run:` blocks.
+      - name: Lint workflows
+        run: npx actionlint
+
+      # Hash-pinned in .github/zizmor/requirements.txt, which Dependabot keeps
+      # current. A venv because the runner's system Python refuses pip
+      # installs (PEP 668).
+      - name: Install zizmor
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zizmor"
+          "$RUNNER_TEMP/zizmor/bin/pip" install --disable-pip-version-check --require-hashes --no-deps -r .github/zizmor/requirements.txt
+          echo "$RUNNER_TEMP/zizmor/bin" >> "$GITHUB_PATH"
+
+      # GH_TOKEN turns on zizmor's online audits.
+      - name: Audit workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor .github/workflows .github/dependabot.yml
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: runtime, development
+
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # The compat loop depends on this: Dependabot widens a peer range only
+      # when it is identical to the devDependency it bumps.
+      - name: Check peers are mirrored
+        run: npm run check:peers
+
+      - name: Build
+        run: npm run build
+
+      - name: Check exports
+        run: npm run check:exports
+
+      - name: Test
+        run: npm test
+
+  # Packs the package as `npm publish` would, installs it into a fresh project
+  # on each supported Node with its peers checked strictly, and loads it
+  # through both `import` and `require()`.
+  consumer:
+    name: Consumer (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22, 24, 26]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      # The build runs on the Node the toolchain is developed against; only
+      # the consumer install and load run on the matrix Node.
+      - name: Setup Node.js 24 (build)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Setup Node.js ${{ matrix.node-version }} (consumer)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Check the package as a consumer
+        run: node scripts/consumer-smoke.mjs
+
+  # The lockfile resolves the newest version in every peer range, so a widened
+  # range would only ever be tested at its new end. This job installs the
+  # oldest supported composureCDK minor and the declared aws-cdk-lib /
+  # constructs floors, and runs the suite against them (ADR-0008: a floor is
+  # proven, not asserted).
+  lowest-supported:
+    name: Lowest supported peers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # No --legacy-peer-deps: a peer conflict at the floor is the bug this
+      # job exists to find. Installing outside the lockfile is the point of
+      # the job (the lockfile pins the newest versions), so zizmor's
+      # adhoc-packages finding is suppressed for this step.
+      - name: Install the lowest supported peers
+        run: | # zizmor: ignore[adhoc-packages]
+          mapfile -t specs < <(node scripts/lowest-supported.mjs)
+          npm install --no-save --no-audit --no-fund "${specs[@]}"
+          npm ls --depth=0 aws-cdk-lib constructs @composurecdk/core
+
+      - name: Test
+        run: npm test
+
+  # The one check the `main` ruleset requires. always() rather than
+  # !cancelled(): a cancelled run must fail this check, because a required
+  # check that is skipped counts as passing.
+  result:
+    name: CI
+    if: always()
+    needs:
+      - workflows
+      - dependency-review
+      - verify
+      - consumer
+      - lowest-supported
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed or be skipped
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::A job that CI needs failed or was cancelled; see the jobs above."
+          exit 1

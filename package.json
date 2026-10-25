@@ -1,0 +1,113 @@
+{
+  "name": "@composure-labs/composurecdk-stream-dlq",
+  "version": "0.0.0",
+  "description": "No-loss stream DLQ for Lambda stream consumers, built on composureCDK: S3 failure capture, an SQS depth signal with alarms, and opt-in manual replay.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/composure-labs/composurecdk-stream-dlq.git"
+  },
+  "bugs": {
+    "url": "https://github.com/composure-labs/composurecdk-stream-dlq/issues"
+  },
+  "homepage": "https://github.com/composure-labs/composurecdk-stream-dlq#readme",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "composurecdk",
+    "composurecdk-pattern",
+    "aws",
+    "cdk",
+    "aws-cdk",
+    "aws-lambda",
+    "dynamodb-streams",
+    "dead-letter-queue"
+  ],
+  "author": "Jason Duffett (https://github.com/laazyj)",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tshy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check:exports": "attw --pack . --profile node16 && publint",
+    "check:peers": "node scripts/check-peer-mirror.mjs",
+    "check:consumer": "node scripts/consumer-smoke.mjs",
+    "verify": "npm run format:check && npm run typecheck && npm run lint && npm run check:peers && npm run build && npm run check:exports && npm test",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,js,mjs,json,md,yaml,yml}": "prettier --write",
+    ".github/workflows/*.yml": "actionlint"
+  },
+  "tshy": {
+    "exports": {
+      "./package.json": "./package.json",
+      ".": "./src/index.ts"
+    }
+  },
+  "peerDependencies": {
+    "@composurecdk/cloudwatch": "^0.11.0",
+    "@composurecdk/core": "^0.11.0",
+    "@composurecdk/kms": "^0.11.0",
+    "@composurecdk/lambda": "^0.11.0",
+    "@composurecdk/s3": "^0.11.0",
+    "@composurecdk/sqs": "^0.11.0",
+    "aws-cdk-lib": "^2.184.0",
+    "constructs": "^10.8.1"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@composurecdk/cloudwatch": "^0.11.0",
+    "@composurecdk/core": "^0.11.0",
+    "@composurecdk/eslint-plugin": "^0.11.0",
+    "@composurecdk/kms": "^0.11.0",
+    "@composurecdk/lambda": "^0.11.0",
+    "@composurecdk/s3": "^0.11.0",
+    "@composurecdk/sqs": "^0.11.0",
+    "@eslint-community/eslint-plugin-eslint-comments": "^4.8.1",
+    "@eslint/js": "^10.0.1",
+    "@kjanat/actionlint": "1.17.0",
+    "@types/node": "^26.6.5",
+    "@vitest/coverage-v8": "^5.0.3",
+    "aws-cdk-lib": "^2.184.0",
+    "constructs": "^10.8.1",
+    "eslint": "^10.12.0",
+    "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
+    "prettier": "^3.9.10",
+    "publint": "^0.3.25",
+    "tshy": "^4.1.3",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^5.0.0"
+  },
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/commonjs/index.d.ts",
+        "default": "./dist/commonjs/index.js"
+      }
+    }
+  },
+  "main": "./dist/commonjs/index.js",
+  "types": "./dist/commonjs/index.d.ts",
+  "module": "./dist/esm/index.js"
+}

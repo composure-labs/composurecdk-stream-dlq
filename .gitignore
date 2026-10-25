@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+.tshy
+.tshy-build
+# tshy writes src/package.json (a CJS-mode shim) during `npm pack`.
+src/package.json
+cdk.out
+.vscode/
+.claude/*
+!.claude/settings.json
