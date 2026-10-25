@@ -18,6 +18,12 @@ if (followUp) {
     replay: false,
     consumerNotification: true,
   });
+  // Follow-up 3: the handler path (L2 eventBridgeEnabled) beside a consumer notification.
+  captureStack(app, "HandlerShared", {
+    signal: "eventbridge",
+    replay: false,
+    consumerNotification: true,
+  });
   // Follow-up 2: a signal EventBridge cannot deliver.
   captureStack(app, "SignalFailure", { signal: "eventbridge", replay: false, denyDelivery: true });
 } else if (floor) {
