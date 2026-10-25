@@ -20,13 +20,8 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
-    # The compat loop. Every peer is mirrored as a devDependency with the same
-    # range (scripts/check-peer-mirror.mjs enforces it). Dependabot ignores
-    # peerDependencies, but rewrites a peer whose range is identical to the
-    # devDependency it bumps. `widen` turns `^0.11.0` into `^0.11.0 || ^0.12.0`
-    # when composureCDK ships a new minor, so the published peer range admits
-    # it while still admitting the old one. An in-range update (a CDK minor
-    # inside `^2.184.0`) is lockfile-only and leaves the ranges alone.
+    # The compat loop: widens mirrored peers (`^0.11.0 || ^0.12.0`) on each new
+    # composureCDK minor. See scripts/check-peer-mirror.mjs.
     versioning-strategy: widen
     ignore:
       # typescript-eslint cannot run on TS 7 (its parser's peer range stops
@@ -57,22 +52,10 @@ updates:
           - "@eslint/*"
           - "@eslint-community/*"
           - "eslint-config-prettier"
+      # Last, as the catch-all: a dependency joins the first group it matches.
       npm-dependencies:
         patterns:
           - "*"
-        exclude-patterns:
-          - "@composurecdk/*"
-          - "aws-cdk-lib"
-          - "constructs"
-          - "vitest"
-          - "@vitest/*"
-          - "typescript"
-          - "typescript-eslint"
-          - "@typescript-eslint/*"
-          - "eslint"
-          - "@eslint/*"
-          - "@eslint-community/*"
-          - "eslint-config-prettier"
 
   # zizmor, which CI installs from this hash-pinned lock.
   - package-ecosystem: uv

@@ -43,6 +43,8 @@ jobs:
           # No dependency cache in a job holding publish credentials.
           package-manager-cache: false
 
+      # `npm version` rejects non-semver itself, but accepts a leading `v`,
+      # which would then produce a `vv…` tag.
       - name: Validate version
         env:
           VERSION: ${{ inputs.version }}

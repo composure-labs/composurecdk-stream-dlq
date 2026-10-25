@@ -1,7 +1,1 @@
-dist
-node_modules
 package-lock.json
-cdk.out
-coverage
-.tshy
-.tshy-build

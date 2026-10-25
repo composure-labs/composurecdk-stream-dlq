@@ -9,3 +9,4 @@ cdk.out
 .vscode/
 .claude/*
 !.claude/settings.json
+dist-pack

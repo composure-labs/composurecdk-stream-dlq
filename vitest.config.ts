@@ -2,6 +2,8 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // No tests until the first API lands after the spike; remove then.
+    passWithNoTests: true,
     testTimeout: 20_000,
     env: {
       // aws-cdk-lib >= 2.262.0 validates every synth against a default ruleset

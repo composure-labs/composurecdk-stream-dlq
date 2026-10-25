@@ -43,7 +43,7 @@ Ships ESM and CommonJS from one source, built by [tshy](https://github.com/isaac
 
 ```sh
 npm ci
-npm run verify          # format, typecheck, lint, peer-mirror check, build, exports check, tests
+npm run verify          # every gate the pre-push hook and CI run
 npm run check:consumer  # pack, install as a consumer would, load through import and require()
 ```
 

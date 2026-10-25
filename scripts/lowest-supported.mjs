@@ -13,7 +13,7 @@
  *   (`2.184.0`). That is the declared floor, which ADR-0008 says must be proven
  *   rather than asserted.
  *
- * Usage: npm install --no-save $(node scripts/lowest-supported.mjs)
+ * Usage: see the `lowest-supported` job in .github/workflows/ci.yml.
  */
 
 import { readFileSync } from "node:fs";

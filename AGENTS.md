@@ -14,7 +14,7 @@ Auto-fix with `npm run format` and `npx eslint . --fix`. If you touched `.github
 
 ## Rules
 
-- **Every peer is mirrored as a devDependency with the _identical_ range string.** Dependabot ignores `peerDependencies` and rewrites a peer only when its range equals the devDependency it bumps; that is how the compat loop widens `^0.11.0` to `^0.11.0 || ^0.12.0`. `npm run check:peers` enforces it. When you add a peer, add the same range to `devDependencies`.
+- **Every peer is mirrored as a devDependency with the _identical_ range string**, or the compat loop silently stops widening peers. When you add a peer, add the same range to `devDependencies`. `npm run check:peers` enforces it; [`scripts/check-peer-mirror.mjs`](scripts/check-peer-mirror.mjs) explains why.
 - **A peer floor is the highest of this package's own usage and its peers' floors** (composureCDK ADR-0008). `aws-cdk-lib` is `^2.184.0` because of S3 on-failure destinations for DynamoDB/Kinesis; `constructs` is `^10.8.1` because `@composurecdk/core` needs it. Raising a floor is a deliberate change; CI's lowest-supported job proves the floors.
 - **Dual ESM/CJS, built by tshy.** No `import.meta` or top-level `await` in `src/`, and brand checks use `Symbol.for(...)`, not `instanceof`. `@composurecdk/eslint-plugin`'s `dualPublishing` and `recommended` presets enforce both.
 - **No bundler.** A Lambda handler ships as a typed, unit-tested function serialised with `.toString()` into `Code.fromInline` (composureCDK ADR-0016). A bundler can inject helpers into a function body and break that serialisation.

@@ -6,16 +6,18 @@
  * check composureCDK's module-compat package runs for its own packages.
  *
  * Run it on Node, never another runtime: a more permissive resolver would hide
- * exactly the ESM/CJS mistakes this exists to catch. Needs `npm run build`
- * first, since `files` ships `dist`.
+ * exactly the ESM/CJS mistakes this exists to catch.
  *
- * Usage: node scripts/consumer-smoke.mjs
+ * Usage: node scripts/consumer-smoke.mjs [<package.tgz>]
+ *   With a tarball (CI's Consumer job, which reuses Verify's), installs that.
+ *   Without one, packs this checkout first; needs `npm run build`, since
+ *   `files` ships `dist`.
  */
 
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -31,26 +33,32 @@ function run(command, args, cwd) {
   return result.stdout;
 }
 
-/** Each peer at the version this checkout has installed. */
-function installedPeers() {
+/** Each peer at the version package-lock.json pins, so no install is needed here. */
+function lockedPeers() {
+  const locked = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8")).packages;
   return Object.keys(manifest.peerDependencies ?? {}).map((name) => {
-    const installed = JSON.parse(
-      readFileSync(join(root, "node_modules", name, "package.json"), "utf8"),
-    );
-    return `${name}@${installed.version}`;
+    const version = locked[`node_modules/${name}`]?.version;
+    if (version === undefined) {
+      console.error(`✗ package-lock.json pins no ${name}`);
+      process.exit(1);
+    }
+    return `${name}@${version}`;
   });
 }
 
 const project = mkdtempSync(join(tmpdir(), "stream-dlq-consumer-"));
 try {
-  const [packed] = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", project], root));
+  const tarball =
+    process.argv[2] === undefined
+      ? join(
+          project,
+          JSON.parse(run("npm", ["pack", "--json", "--pack-destination", project], root))[0]
+            .filename,
+        )
+      : resolve(process.argv[2]);
   writeFileSync(join(project, "package.json"), '{ "private": true }\n');
   // No --legacy-peer-deps: a consumer's install enforces the peer ranges.
-  run(
-    "npm",
-    ["install", "--no-audit", "--no-fund", join(project, packed.filename), ...installedPeers()],
-    project,
-  );
+  run("npm", ["install", "--no-audit", "--no-fund", tarball, ...lockedPeers()], project);
 
   const name = manifest.name;
   run("node", ["--input-type=module", "-e", `await import(${JSON.stringify(name)});`], project);

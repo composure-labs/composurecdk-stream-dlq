@@ -8,27 +8,21 @@ import composurecdk from "@composurecdk/eslint-plugin";
 
 export default defineConfig(
   {
-    ignores: ["dist/", ".tshy/", ".tshy-build/", "node_modules/", "cdk.out/", "coverage/"],
+    ignores: ["dist/", ".tshy/", ".tshy-build/", "cdk.out/", "coverage/"],
   },
   eslint.configs.recommended,
   tseslint.configs.strictTypeChecked,
   tseslint.configs.stylisticTypeChecked,
   {
-    languageOptions: {
-      parserOptions: {
-        projectService: {
-          allowDefaultProject: ["eslint.config.mjs", "vitest.config.ts", "scripts/*.mjs"],
-        },
-      },
-    },
+    languageOptions: { parserOptions: { projectService: true } },
   },
   {
-    files: ["eslint.config.mjs", "vitest.config.ts"],
+    // Outside tsconfig, so not type-checked.
+    files: ["eslint.config.mjs", "vitest.config.ts", "scripts/*.mjs"],
     extends: [tseslint.configs.disableTypeChecked],
   },
   {
     files: ["scripts/*.mjs"],
-    extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
       globals: { console: "readonly", process: "readonly", URL: "readonly" },
     },
@@ -49,7 +43,7 @@ export default defineConfig(
     files: ["src/**/*.ts", "test/**/*.ts"],
     plugins: { "@eslint-community/eslint-comments": eslintComments },
     rules: {
-      "@eslint-community/eslint-comments/require-description": ["error", { ignore: [] }],
+      "@eslint-community/eslint-comments/require-description": "error",
     },
   },
   eslintConfigPrettier,
