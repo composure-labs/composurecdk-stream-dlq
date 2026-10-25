@@ -8,7 +8,7 @@ import composurecdk from "@composurecdk/eslint-plugin";
 
 export default defineConfig(
   {
-    ignores: ["dist/", ".tshy/", ".tshy-build/", "cdk.out/", "coverage/"],
+    ignores: ["dist/", ".tshy/", ".tshy-build/", "cdk.out/", "coverage/", "spike/"],
   },
   eslint.configs.recommended,
   tseslint.configs.strictTypeChecked,

@@ -10,3 +10,6 @@ cdk.out
 .claude/*
 !.claude/settings.json
 dist-pack
+# The #623 spike's raw observations hold account IDs and ARNs.
+spike/results
+spike/cdk.out*
