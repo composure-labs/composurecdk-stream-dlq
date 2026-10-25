@@ -166,6 +166,30 @@ describe("createStreamDlqCaptureBuilder", () => {
       });
     });
 
+    it("merges the consumer's alarm config with capture's, field by field", () => {
+      const result = build(
+        createStreamDlqCaptureBuilder()
+          .queue((q) => q.recommendedAlarms({ approximateAgeOfOldestMessage: false }))
+          .rule((r) => r.recommendedAlarms({ failedInvocations: { threshold: 2 } })),
+      );
+      expect(Object.keys(result.queue.alarms)).toEqual(["approximateNumberOfMessagesVisible"]);
+      expect(result.rule.alarms.failedInvocations.node.defaultChild).toMatchObject({
+        threshold: 2,
+        evaluationPeriods: 1,
+        treatMissingData: "notBreaching",
+      });
+    });
+
+    it("turns every alarm off when the consumer passes false", () => {
+      const result = build(
+        createStreamDlqCaptureBuilder()
+          .queue((q) => q.recommendedAlarms(false))
+          .rule((r) => r.recommendedAlarms(false)),
+      );
+      expect(result.queue.alarms).toEqual({});
+      expect(result.rule.alarms).toEqual({});
+    });
+
     it("tags every resource it creates", () => {
       const { template } = synth(createStreamDlqCaptureBuilder().tag("Team", "orders"));
       const team = Match.arrayWith([{ Key: "Team", Value: "orders" }]);

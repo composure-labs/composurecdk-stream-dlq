@@ -1,10 +1,17 @@
+import type { Duration } from "aws-cdk-lib";
 import type { IConstruct } from "constructs";
 import { compose, type Lifecycle, ref } from "@composurecdk/core";
 import { type ITaggedBuilder, taggedBuilder } from "@composurecdk/cloudformation";
 import { type IRuleBuilder, type RuleBuilderResult, sqsTarget } from "@composurecdk/events";
 import type { BucketBuilderResult, IBucketBuilder } from "@composurecdk/s3";
 import { DLQ_QUEUE_DEFAULTS, type IQueueBuilder, type QueueBuilderResult } from "@composurecdk/sqs";
-import { failureBucketDefaults, signalQueueDefaults, signalRuleDefaults } from "./defaults.js";
+import {
+  failureBucketDefaults,
+  SIGNAL_RULE_ALARMS,
+  signalQueueAlarms,
+  signalQueueDefaults,
+  signalRuleDefaults,
+} from "./defaults.js";
 
 /**
  * Configuration for {@link createStreamDlqCaptureBuilder}. Each prop is a
@@ -24,8 +31,8 @@ export interface StreamDlqCaptureBuilderProps {
 
   /**
    * Customise the signal rule. Capture sets its event pattern and its queue
-   * target. Setting `recommendedAlarms` replaces capture's alarm configuration
-   * for the rule rather than merging with it.
+   * target. Alarms set with `recommendedAlarms` override capture's alarm by
+   * alarm, as they do on the queue.
    */
   rule?: (builder: IRuleBuilder) => IRuleBuilder;
 }
@@ -55,8 +62,8 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
 
   build(scope: IConstruct, id: string, context?: Record<string, object>): StreamDlqCaptureResult {
     const bucket = configured(failureBucketDefaults(), this.props.bucket);
-    const queue = configured(signalQueueDefaults(), this.props.queue);
-    const rule = configured(
+    const configuredQueue = configured(signalQueueDefaults(), this.props.queue);
+    const configuredRule = configured(
       signalRuleDefaults().addTarget(
         "queue",
         sqsTarget(ref<QueueBuilderResult>("queue").get("queue")),
@@ -64,7 +71,20 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
       this.props.rule,
     );
 
-    checkSignalPath(bucket, queue);
+    // Unset only on a replacement builder a callback returned, which gets the role's retention.
+    const retention = configuredQueue.retentionPeriod() ?? DLQ_QUEUE_DEFAULTS.retentionPeriod;
+    checkSignalPath(bucket, retention);
+
+    // Alarms go on after the callbacks, so the age alarm tracks the final
+    // retention, and on copies, so a builder a callback returned is untouched.
+    const queue = configuredQueue
+      .copy()
+      .recommendedAlarms(
+        underConsumer(signalQueueAlarms(retention), configuredQueue.recommendedAlarms()),
+      );
+    const rule = configuredRule
+      .copy()
+      .recommendedAlarms(underConsumer(SIGNAL_RULE_ALARMS, configuredRule.recommendedAlarms()));
 
     return compose(
       { bucket, queue, rule: withFailureBucketPattern(rule) },
@@ -75,6 +95,25 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
 
 function configured<B>(defaults: B, configure: ((builder: B) => B) | undefined): B {
   return configure?.(defaults) ?? defaults;
+}
+
+/**
+ * Capture's alarm config with the consumer's on top, field by field, so a
+ * field the consumer leaves out keeps capture's value rather than falling back
+ * to the library's. `false`, for all alarms or for one, wins outright.
+ */
+function underConsumer<C extends object>(capture: C, consumer: C | false | undefined): C | false {
+  if (consumer === false) return false;
+  const merged: Record<string, unknown> = { ...(capture as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(consumer ?? {})) {
+    const pinned = merged[key];
+    merged[key] = isObject(pinned) && isObject(value) ? { ...pinned, ...value } : value;
+  }
+  return merged as C;
+}
+
+function isObject(value: unknown): value is object {
+  return typeof value === "object" && value !== null;
 }
 
 /**
@@ -90,8 +129,8 @@ function withFailureBucketPattern(rule: IRuleBuilder): Lifecycle<RuleBuilderResu
   return {
     build(scope: IConstruct, id: string, context: Record<string, object>): RuleBuilderResult {
       const bucket = ref<BucketBuilderResult>("bucket").get("bucket").resolve(context);
+      // `rule` is capture's own copy, so setting the pattern on it is safe.
       return rule
-        .copy()
         .eventPattern({
           source: ["aws.s3"],
           detailType: ["Object Created"],
@@ -108,15 +147,13 @@ function withFailureBucketPattern(rule: IRuleBuilder): Lifecycle<RuleBuilderResu
  * that deletes an object while its signal is still on the queue (architecture
  * D5). Rules with a filter are checked too, since one may match failures.
  */
-function checkSignalPath(bucket: IBucketBuilder, queue: IQueueBuilder<"dlq">): void {
+function checkSignalPath(bucket: IBucketBuilder, retention: Duration): void {
   if (bucket.eventBridgeEnabled() !== true) {
     throw new Error(
       "Stream DLQ capture: the failure bucket must keep eventBridgeEnabled, " +
         "or no failure is ever signalled.",
     );
   }
-  // Unset only on a replacement builder a callback returned, which gets the role's retention.
-  const retention = queue.retentionPeriod() ?? DLQ_QUEUE_DEFAULTS.retentionPeriod;
   for (const rule of bucket.lifecycleRules() ?? []) {
     if (rule.enabled === false || rule.expiration === undefined) continue;
     if (rule.expiration.toSeconds() <= retention.toSeconds()) {

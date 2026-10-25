@@ -91,7 +91,7 @@ createStreamDlqCaptureBuilder()
   .rule((r) => r.description("Orders stream failures"));
 ```
 
-`build()` throws if the bucket no longer sends events to EventBridge, or if any lifecycle rule expires objects before the queue's retention ends: a failure would be deleted while its signal is still waiting. Setting `recommendedAlarms` on the rule replaces capture's alarm configuration for it, rather than merging with it.
+`build()` throws if the bucket no longer sends events to EventBridge, or if any lifecycle rule expires objects before the queue's retention ends: a failure would be deleted while its signal is still waiting. Alarms you set with `recommendedAlarms` on the queue or the rule override capture's field by field; `recommendedAlarms(false)` turns them all off.
 
 ## Operating it
 
