@@ -1,28 +1,7 @@
 # Project Instructions
 
-This package is a **composure-labs** sibling of [composureCDK](https://github.com/laazyj/composureCDK). It is built only on composureCDK's _published_ API, so read composureCDK's [architecture guide](https://github.com/laazyj/composureCDK/blob/main/docs/architecture.md) for the shape of builders, `compose`, refs and grants. The design and the plan are in [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first. It is the canonical guide to the gates and the project rules, and this file adds only what is specific to working as an agent.
 
-## After making changes
-
-```sh
-npm run verify          # what the pre-push hook and CI's Verify job run
-npm run check:consumer  # pack + install + load through import and require(); run on Node
-npx actionlint          # only if you touched .github/workflows/
-```
-
-Auto-fix with `npm run format` and `npx eslint . --fix`. If you touched `.github/workflows/` or `dependabot.yml`, CI also runs zizmor; fix or suppress its findings with a reason.
-
-## Rules
-
-- **Every peer is mirrored as a devDependency with the _identical_ range string**, or the compat loop silently stops widening peers. When you add a peer, add the same range to `devDependencies`. `npm run check:peers` enforces it; [`scripts/check-peer-mirror.mjs`](scripts/check-peer-mirror.mjs) explains why.
-- **A peer floor is the highest of this package's own usage and its peers' floors** (composureCDK ADR-0008). `aws-cdk-lib` is `^2.184.0` because of S3 on-failure destinations for DynamoDB/Kinesis; `constructs` is `^10.8.1` because `@composurecdk/core` needs it. Raising a floor is a deliberate change; CI's lowest-supported job proves the floors.
-- **Dual ESM/CJS, built by tshy.** No `import.meta` or top-level `await` in `src/`, and brand checks use `Symbol.for(...)`, not `instanceof`. `@composurecdk/eslint-plugin`'s `dualPublishing` and `recommended` presets enforce both.
-- **No bundler.** A Lambda handler ships as a typed, unit-tested function serialised with `.toString()` into `Code.fromInline` (composureCDK ADR-0016). A bundler can inject helpers into a function body and break that serialisation.
-- **`package.json` scripts are the task runner.** This is a single npm package, so there is no nx; keep each script a plain command.
-- **Double quotes** (Prettier `"singleQuote": false`).
-- **No CHANGELOG file.** Releases use generated GitHub Release notes; describe behaviour changes in the PR body.
-- Commits use Conventional Commits: `<type>(<scope>): <description>`.
-
-## AWS
-
-Workflows that deploy assume `github-actions-composure-labs-stream-dlq` through the `sandbox` environment. Every stack is named `ComposureLabs-StreamDlq-*`; the role's permissions are scoped to that prefix (see [`.github/cloudformation/github-oidc-role.yml`](.github/cloudformation/github-oidc-role.yml)). A stack outside the prefix cannot be deployed or inspected by CI. A change to that template must be redeployed by hand before the workflow that needs it runs.
+- **Run the gates before presenting work** ([Before you open a pull request](CONTRIBUTING.md#before-you-open-a-pull-request)), and report failures with their output rather than working around them.
+- **The project rules have enforcement behind them.** `check:peers`, the lowest-supported CI job and `@composurecdk/eslint-plugin` will each tell you when a rule is broken, so fix the cause rather than suppressing the check.
+- **Deploying needs the sandbox role.** Anything that changes `.github/cloudformation/github-oidc-role.yml` needs a manual redeploy; say so in the PR.
