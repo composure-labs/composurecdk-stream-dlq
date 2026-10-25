@@ -10,5 +10,6 @@ export {
 } from "./capture-builder.js";
 export {
   DEFAULT_FAILURE_BUCKET_LIFECYCLE_RULES,
+  DEFAULT_SIGNAL_QUEUE_RETENTION,
   DEFAULT_SIGNAL_QUEUE_VISIBILITY_TIMEOUT,
 } from "./defaults.js";

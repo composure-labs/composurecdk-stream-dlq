@@ -3,6 +3,8 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { compose } from "@composurecdk/core";
 import { assertCopyPreservesState } from "@composurecdk/core/testing";
+import { createBucketBuilder } from "@composurecdk/s3";
+import { createQueueBuilder } from "@composurecdk/sqs";
 import {
   createStreamDlqCaptureBuilder,
   type IStreamDlqCaptureBuilder,
@@ -31,18 +33,29 @@ describe("createStreamDlqCaptureBuilder", () => {
   describe("defaults", () => {
     const { result, template } = synth();
 
-    it("keeps its construct ids, which the retained bucket depends on", () => {
+    it("pins its logical ids, which the retained bucket depends on", () => {
       expect(logicalIds(template, "AWS::S3::Bucket")).toEqual([
-        "FailuresBucketAccessLogsCA334F66",
-        "FailuresBucketD9B971D9",
+        "Failuresbucket5560B8FC",
+        "FailuresbucketAccessLogs3A7592D3",
       ]);
-      expect(logicalIds(template, "AWS::SQS::Queue")).toEqual(["FailuresQueueA1EAB8A1"]);
-      expect(logicalIds(template, "AWS::Events::Rule")).toEqual(["FailuresRule8DF695A2"]);
+      expect(logicalIds(template, "AWS::SQS::Queue")).toEqual(["Failuresqueue2F8B3563"]);
+      expect(logicalIds(template, "AWS::Events::Rule")).toEqual(["Failuresrule712D9F28"]);
     });
 
     it("builds an unversioned, retained failure bucket with the failure lifecycle", () => {
       template.hasResource("AWS::S3::Bucket", {
         Properties: {
+          BucketEncryption: {
+            ServerSideEncryptionConfiguration: [
+              { ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } },
+            ],
+          },
+          PublicAccessBlockConfiguration: {
+            BlockPublicAcls: true,
+            BlockPublicPolicy: true,
+            IgnorePublicAcls: true,
+            RestrictPublicBuckets: true,
+          },
           LoggingConfiguration: Match.objectLike({ LogFilePrefix: "logs/" }),
           VersioningConfiguration: Match.absent(),
           LifecycleConfiguration: {
@@ -79,9 +92,9 @@ describe("createStreamDlqCaptureBuilder", () => {
         EventPattern: {
           source: ["aws.s3"],
           "detail-type": ["Object Created"],
-          detail: { bucket: { name: [{ Ref: "FailuresBucketD9B971D9" }] } },
+          detail: { bucket: { name: [{ Ref: "Failuresbucket5560B8FC" }] } },
         },
-        Targets: [Match.objectLike({ Arn: { "Fn::GetAtt": ["FailuresQueueA1EAB8A1", "Arn"] } })],
+        Targets: [Match.objectLike({ Arn: { "Fn::GetAtt": ["Failuresqueue2F8B3563", "Arn"] } })],
       });
       template.hasResourceProperties("AWS::SQS::QueuePolicy", {
         PolicyDocument: {
@@ -90,11 +103,20 @@ describe("createStreamDlqCaptureBuilder", () => {
               Action: Match.arrayWith(["sqs:SendMessage"]),
               Principal: { Service: "events.amazonaws.com" },
               Condition: {
-                ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": ["FailuresRule8DF695A2", "Arn"] } },
+                ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": ["Failuresrule712D9F28", "Arn"] } },
               },
             }),
           ]),
         },
+      });
+    });
+
+    it("alarms on any rule invocation that fails", () => {
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        MetricName: "FailedInvocations",
+        Threshold: 0,
+        EvaluationPeriods: 1,
+        TreatMissingData: "notBreaching",
       });
     });
 
@@ -106,6 +128,19 @@ describe("createStreamDlqCaptureBuilder", () => {
       expect(Object.keys(result.rule.alarms)).toEqual(["failedInvocations"]);
       expect(Object.keys(result.bucket.alarms)).toEqual([]);
       template.resourceCountIs("AWS::CloudWatch::Alarm", 3);
+    });
+
+    it("alarms on any visible message, and on a message at 75% of retention", () => {
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        MetricName: "ApproximateNumberOfMessagesVisible",
+        Threshold: 0,
+        EvaluationPeriods: 1,
+        TreatMissingData: "notBreaching",
+      });
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        MetricName: "ApproximateAgeOfOldestMessage",
+        Threshold: 907_200,
+      });
     });
   });
 
@@ -120,6 +155,23 @@ describe("createStreamDlqCaptureBuilder", () => {
       template.resourceCountIs("AWS::S3::Bucket", 1);
       template.hasResourceProperties("AWS::SQS::Queue", { VisibilityTimeout: 300 });
       template.hasResourceProperties("AWS::Events::Rule", { Description: "Orders failures" });
+    });
+
+    it("scales the age alarm to a customised retention", () => {
+      synth(
+        createStreamDlqCaptureBuilder().queue((q) => q.retentionPeriod(Duration.days(7))),
+      ).template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        MetricName: "ApproximateAgeOfOldestMessage",
+        Threshold: 453_600,
+      });
+    });
+
+    it("tags every resource it creates", () => {
+      const { template } = synth(createStreamDlqCaptureBuilder().tag("Team", "orders"));
+      const team = Match.arrayWith([{ Key: "Team", Value: "orders" }]);
+      template.allResourcesProperties("AWS::S3::Bucket", { Tags: team });
+      template.hasResourceProperties("AWS::SQS::Queue", { Tags: team });
+      template.allResourcesProperties("AWS::CloudWatch::Alarm", { Tags: team });
     });
 
     it("copies its configuration independently", () => {
@@ -162,6 +214,25 @@ describe("createStreamDlqCaptureBuilder", () => {
       expect(() => build(withExpiry(8))).not.toThrow();
     });
 
+    it("checks a replacement builder that a callback returns", () => {
+      const replaced = (expiration: Duration) =>
+        createStreamDlqCaptureBuilder()
+          .bucket(() =>
+            createBucketBuilder()
+              .eventBridgeEnabled(true)
+              .lifecycleRules([{ id: "Replaced", expiration }]),
+          )
+          .queue(() => createQueueBuilder("dlq"));
+      expect(() => build(replaced(Duration.days(14)))).toThrow(/"Replaced".*retention \(14 days\)/);
+      expect(() =>
+        build(
+          createStreamDlqCaptureBuilder().bucket(() =>
+            createBucketBuilder().eventBridgeEnabled(true),
+          ),
+        ),
+      ).not.toThrow();
+    });
+
     it("ignores disabled rules and rules without an expiry", () => {
       expect(() =>
         build(
@@ -182,6 +253,6 @@ describe("createStreamDlqCaptureBuilder", () => {
       { failures: createStreamDlqCaptureBuilder() },
       { failures: [] },
     ).build(stack, "App");
-    expect(failures.bucket.bucket.node.path).toBe("Test/App--failuresBucket");
+    expect(failures.bucket.bucket.node.path).toBe("Test/App--failures--bucket");
   });
 });

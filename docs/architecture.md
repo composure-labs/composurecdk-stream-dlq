@@ -113,7 +113,7 @@ Two recommendations the README makes to consumers, though capture doesn't enforc
 
 ## How it composes
 
-Capture is a single component (a `Lifecycle`) in the consumer's own `compose` map. The consumer deploys it **in the same stack as its processor**, one capture per processor ([D10](#decisions), [D11](#decisions)).
+Capture is a composed system, nestable in the consumer's own `compose` map. The consumer deploys it **in the same stack as its processor**, one capture per processor ([D10](#decisions), [D11](#decisions)).
 
 ```mermaid
 flowchart TB

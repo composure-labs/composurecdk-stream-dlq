@@ -1,26 +1,10 @@
 import type { IConstruct } from "constructs";
-import { Builder, type IBuilder, type Lifecycle } from "@composurecdk/core";
-import {
-  createRuleBuilder,
-  type IRuleBuilder,
-  type RuleBuilderResult,
-  sqsTarget,
-} from "@composurecdk/events";
-import {
-  type BucketBuilderResult,
-  createBucketBuilder,
-  type IBucketBuilder,
-} from "@composurecdk/s3";
-import {
-  createQueueBuilder,
-  DLQ_QUEUE_DEFAULTS,
-  type IQueueBuilder,
-  type QueueBuilderResult,
-} from "@composurecdk/sqs";
-import {
-  DEFAULT_FAILURE_BUCKET_LIFECYCLE_RULES,
-  DEFAULT_SIGNAL_QUEUE_VISIBILITY_TIMEOUT,
-} from "./defaults.js";
+import { compose, type Lifecycle, ref } from "@composurecdk/core";
+import { type ITaggedBuilder, taggedBuilder } from "@composurecdk/cloudformation";
+import { type IRuleBuilder, type RuleBuilderResult, sqsTarget } from "@composurecdk/events";
+import type { BucketBuilderResult, IBucketBuilder } from "@composurecdk/s3";
+import { DLQ_QUEUE_DEFAULTS, type IQueueBuilder, type QueueBuilderResult } from "@composurecdk/sqs";
+import { failureBucketDefaults, signalQueueDefaults, signalRuleDefaults } from "./defaults.js";
 
 /**
  * Configuration for {@link createStreamDlqCaptureBuilder}. Each prop is a
@@ -30,26 +14,18 @@ import {
  */
 export interface StreamDlqCaptureBuilderProps {
   /**
-   * Customise the failure bucket. The builder arrives with versioning off,
-   * {@link DEFAULT_FAILURE_BUCKET_LIFECYCLE_RULES} and EventBridge on, over
-   * composureCDK's bucket defaults.
-   *
-   * EventBridge must stay on, and every expiry rule must outlast the signal
-   * queue's retention. `build()` throws otherwise.
+   * Customise the failure bucket. EventBridge must stay on, and every expiry
+   * rule must outlast the signal queue's retention. `build()` throws otherwise.
    */
   bucket?: (builder: IBucketBuilder) => IBucketBuilder;
 
-  /**
-   * Customise the signal queue. The builder arrives in composureCDK's `"dlq"`
-   * role with {@link DEFAULT_SIGNAL_QUEUE_VISIBILITY_TIMEOUT}.
-   */
+  /** Customise the signal queue, a composureCDK `"dlq"`-role queue. */
   queue?: (builder: IQueueBuilder<"dlq">) => IQueueBuilder<"dlq">;
 
   /**
-   * Customise the rule that turns each failure object into a signal. The
-   * builder arrives with the bucket's `Object Created` pattern, the queue as
-   * its target, and only the `failedInvocations` alarm. Setting
-   * `recommendedAlarms` replaces that alarm configuration.
+   * Customise the signal rule. Capture sets its event pattern and its queue
+   * target. Setting `recommendedAlarms` replaces capture's alarm configuration
+   * for the rule rather than merging with it.
    */
   rule?: (builder: IRuleBuilder) => IRuleBuilder;
 }
@@ -69,7 +45,7 @@ export interface StreamDlqCaptureResult {
  * source mapping's on-failure destination, and an SQS signal of each failure
  * that can be alarmed on. See {@link StreamDlqCaptureBuilderProps}.
  */
-export type IStreamDlqCaptureBuilder = IBuilder<
+export type IStreamDlqCaptureBuilder = ITaggedBuilder<
   StreamDlqCaptureBuilderProps,
   StreamDlqCaptureBuilder
 >;
@@ -78,46 +54,52 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
   props: Partial<StreamDlqCaptureBuilderProps> = {};
 
   build(scope: IConstruct, id: string, context?: Record<string, object>): StreamDlqCaptureResult {
-    const bucketDefaults = createBucketBuilder()
-      .versioned(false)
-      .lifecycleRules(DEFAULT_FAILURE_BUCKET_LIFECYCLE_RULES)
-      .eventBridgeEnabled(true);
-    const bucketBuilder = this.props.bucket?.(bucketDefaults) ?? bucketDefaults;
-
-    const queueDefaults = createQueueBuilder("dlq").visibilityTimeout(
-      DEFAULT_SIGNAL_QUEUE_VISIBILITY_TIMEOUT,
-    );
-    const queueBuilder = this.props.queue?.(queueDefaults) ?? queueDefaults;
-
-    checkSignalPath(bucketBuilder, queueBuilder);
-
-    const bucket = bucketBuilder.build(scope, `${id}Bucket`, context);
-    const queue = queueBuilder.build(scope, `${id}Queue`, context);
-
-    const ruleDefaults = createRuleBuilder()
-      .description("Signals each stream failure written to the failure bucket")
-      .eventPattern({
-        source: ["aws.s3"],
-        detailType: ["Object Created"],
-        detail: { bucket: { name: [bucket.bucket.bucketName] } },
-      })
-      .addTarget("queue", sqsTarget(queue.queue))
-      .recommendedAlarms({
-        // Throttling only delays delivery: EventBridge keeps retrying for 24 hours,
-        // and a signal it gives up on raises failedInvocations.
-        throttledRules: false,
-        // The target has no dead-letter queue (architecture D2), so these never emit.
-        invocationsSentToDlq: false,
-        invocationsFailedToBeSentToDlq: false,
-      });
-    const rule = (this.props.rule?.(ruleDefaults) ?? ruleDefaults).build(
-      scope,
-      `${id}Rule`,
-      context,
+    const bucket = configured(failureBucketDefaults(), this.props.bucket);
+    const queue = configured(signalQueueDefaults(), this.props.queue);
+    const rule = configured(
+      signalRuleDefaults().addTarget(
+        "queue",
+        sqsTarget(ref<QueueBuilderResult>("queue").get("queue")),
+      ),
+      this.props.rule,
     );
 
-    return { bucket, queue, rule };
+    checkSignalPath(bucket, queue);
+
+    return compose(
+      { bucket, queue, rule: withFailureBucketPattern(rule) },
+      { bucket: [], queue: [], rule: ["bucket", "queue"] },
+    ).build(scope, id, context);
   }
+}
+
+function configured<B>(defaults: B, configure: ((builder: B) => B) | undefined): B {
+  return configure?.(defaults) ?? defaults;
+}
+
+/**
+ * Adds the failure bucket's `Object Created` pattern to the rule at build,
+ * once the bucket's name can be resolved.
+ *
+ * Interim: the rule builder's `eventPattern` can't take a `ref` yet. Once
+ * laazyj/composureCDK#637 lands, replace this with `.eventPattern(ref(...))`
+ * applied after the consumer's `rule` callback, as here, so the pattern still
+ * can't be overridden.
+ */
+function withFailureBucketPattern(rule: IRuleBuilder): Lifecycle<RuleBuilderResult> {
+  return {
+    build(scope: IConstruct, id: string, context: Record<string, object>): RuleBuilderResult {
+      const bucket = ref<BucketBuilderResult>("bucket").get("bucket").resolve(context);
+      return rule
+        .copy()
+        .eventPattern({
+          source: ["aws.s3"],
+          detailType: ["Object Created"],
+          detail: { bucket: { name: [bucket.bucketName] } },
+        })
+        .build(scope, id, context);
+    },
+  };
 }
 
 /**
@@ -133,6 +115,7 @@ function checkSignalPath(bucket: IBucketBuilder, queue: IQueueBuilder<"dlq">): v
         "or no failure is ever signalled.",
     );
   }
+  // Unset only on a replacement builder a callback returned, which gets the role's retention.
   const retention = queue.retentionPeriod() ?? DLQ_QUEUE_DEFAULTS.retentionPeriod;
   for (const rule of bucket.lifecycleRules() ?? []) {
     if (rule.enabled === false || rule.expiration === undefined) continue;
@@ -153,8 +136,7 @@ function checkSignalPath(bucket: IBucketBuilder, queue: IQueueBuilder<"dlq">): v
  * reaches the signal queue through EventBridge, and the queue's alarms raise
  * it. Name the bucket as the mapping's on-failure destination.
  *
- * Construct ids are prefixed with `id`, and the bucket is RETAINed, so keep
- * `id` stable. The README lists what is built.
+ * The bucket is RETAINed, so keep `id` stable. The README lists what is built.
  *
  * @example
  * ```ts
@@ -168,5 +150,7 @@ function checkSignalPath(bucket: IBucketBuilder, queue: IQueueBuilder<"dlq">): v
  * ```
  */
 export function createStreamDlqCaptureBuilder(): IStreamDlqCaptureBuilder {
-  return Builder<StreamDlqCaptureBuilderProps, StreamDlqCaptureBuilder>(StreamDlqCaptureBuilder);
+  return taggedBuilder<StreamDlqCaptureBuilderProps, StreamDlqCaptureBuilder>(
+    StreamDlqCaptureBuilder,
+  );
 }

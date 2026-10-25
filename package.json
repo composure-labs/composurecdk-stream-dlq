@@ -58,6 +58,7 @@
     }
   },
   "peerDependencies": {
+    "@composurecdk/cloudformation": "^0.11.0",
     "@composurecdk/cloudwatch": "^0.11.0",
     "@composurecdk/core": "^0.11.0",
     "@composurecdk/events": "^0.11.0",
@@ -70,6 +71,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
+    "@composurecdk/cloudformation": "^0.11.0",
     "@composurecdk/cloudwatch": "^0.11.0",
     "@composurecdk/core": "^0.11.0",
     "@composurecdk/eslint-plugin": "^0.11.0",

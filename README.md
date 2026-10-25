@@ -18,15 +18,13 @@ A Lambda consuming DynamoDB Streams (and, later, Kinesis) eventually exhausts it
 
 ## Getting started
 
-Install the package beside the composureCDK packages and CDK peers it builds on (the example below also uses `@composurecdk/dynamodb` for the table):
-
 ```sh
-npm install @composure-labs/composurecdk-stream-dlq \
-  @composurecdk/core @composurecdk/lambda @composurecdk/s3 @composurecdk/sqs \
-  @composurecdk/events @composurecdk/kms @composurecdk/cloudwatch aws-cdk-lib constructs
+npm install @composure-labs/composurecdk-stream-dlq
 ```
 
-Capture is a component you add to your own `compose` map, **in the same stack as its processor**, one capture per processor. It's a graph leaf: it never references the processor.
+npm 7+ and pnpm 8+ install its peers for you. Add any composureCDK package your own code imports, such as `@composurecdk/core` and `@composurecdk/lambda` below, to your `package.json` as well.
+
+Capture is a composed system you add to your own `compose` map, **in the same stack as its processor**, one capture per processor. It's a graph leaf: it never references the processor.
 
 ```ts
 import { AttributeType, StreamViewType } from "aws-cdk-lib/aws-dynamodb";
@@ -67,15 +65,14 @@ compose(
 
 ## What capture builds
 
-With `id` as a prefix (`failures` above):
+Capture is itself a composed system of three components, built under its `id` like any nested system:
 
-| Construct id            | What                                                                                                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `${id}Bucket`           | The failure bucket: versioning off, objects expire after 90 days, EventBridge on, RETAIN, plus composureCDK's bucket defaults (SSE-S3, TLS, no public access) |
-| `${id}BucketAccessLogs` | Its access-logs bucket                                                                                                                                        |
-| `${id}Queue`            | The signal queue, in composureCDK's `"dlq"` role: 14-day retention, SSE-SQS, 1-minute visibility timeout                                                      |
-| `${id}Rule`             | An EventBridge rule on the default bus: `aws.s3` / `Object Created` / this bucket, targeting the queue                                                        |
-| Alarms                  | Queue depth > 0; oldest message ≥ 75% of retention; the rule's `FailedInvocations` > 0                                                                        |
+| Component | What                                                                                                                                                                          |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bucket`  | The failure bucket: versioning off, objects expire after 90 days, EventBridge on, RETAIN, SSE-S3, TLS enforced, public access blocked, and access logs to its own logs bucket |
+| `queue`   | The signal queue, in composureCDK's `"dlq"` role: 14-day retention, SSE-SQS, 1-minute visibility timeout                                                                      |
+| `rule`    | An EventBridge rule on the default bus: `aws.s3` / `Object Created` / this bucket, targeting the queue                                                                        |
+| Alarms    | Queue depth > 0; oldest message ≥ 75% of retention; the rule's `FailedInvocations` > 0                                                                                        |
 
 The build result returns each component as its composureCDK builder does: `result.bucket` (`bucket`, `accessLogsBucket`, `alarms`), `result.queue` (`queue`, `alarms`) and `result.rule` (`rule`, `targets`, `alarms`).
 
@@ -85,7 +82,7 @@ The build result returns each component as its composureCDK builder does: `resul
 
 ## Customising
 
-Each component has a callback that receives its builder, already set up with capture's defaults:
+`.tag(key, value)` tags every resource capture creates. Each component has a callback that receives its builder, already set up with capture's defaults:
 
 ```ts
 createStreamDlqCaptureBuilder()
