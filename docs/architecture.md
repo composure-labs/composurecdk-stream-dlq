@@ -5,7 +5,7 @@ This document describes the **capture** half of `@composure-labs/composurecdk-st
 The design comes from [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623). The behaviour described below was observed in a real AWS account during the [spike](https://github.com/laazyj/composureCDK/issues/623#issuecomment-6396650770) and [its follow-up](https://github.com/laazyj/composureCDK/issues/623#issuecomment-6397908967), unless a statement says it is untested.
 
 > [!NOTE]
-> Names in the API sketches (`createStreamDlqCapture`, `s3OnFailure` and the option names) are illustrative until the capture API is implemented.
+> `s3OnFailure` in the sketches below is illustrative until the grant helper is implemented.
 
 ## The problem
 
@@ -113,13 +113,13 @@ Two recommendations the README makes to consumers, though capture doesn't enforc
 
 ## How it composes
 
-Capture is a composed system, nestable in the consumer's own `compose` map. The consumer deploys it **in the same stack as its processor**, one capture per processor ([D10](#decisions), [D11](#decisions)).
+Capture is a single component (a `Lifecycle`) in the consumer's own `compose` map. The consumer deploys it **in the same stack as its processor**, one capture per processor ([D10](#decisions), [D11](#decisions)).
 
 ```mermaid
 flowchart TB
   subgraph app["Consumer's compose map, one stack"]
     orders["orders: table builder"]
-    subgraph failures["failures: createStreamDlqCapture()"]
+    subgraph failures["failures: createStreamDlqCaptureBuilder()"]
       b["bucket"]
       r["rule"]
       q["queue"]
@@ -141,7 +141,7 @@ compose(
       .partitionKey({ name: "pk", type: AttributeType.STRING })
       .dynamoStream(StreamViewType.NEW_AND_OLD_IMAGES),
 
-    failures: createStreamDlqCapture(),
+    failures: createStreamDlqCaptureBuilder(),
 
     processor: createFunctionBuilder()
       // ...runtime, handler, code...

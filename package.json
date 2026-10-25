@@ -60,6 +60,7 @@
   "peerDependencies": {
     "@composurecdk/cloudwatch": "^0.11.0",
     "@composurecdk/core": "^0.11.0",
+    "@composurecdk/events": "^0.11.0",
     "@composurecdk/kms": "^0.11.0",
     "@composurecdk/lambda": "^0.11.0",
     "@composurecdk/s3": "^0.11.0",
@@ -72,6 +73,7 @@
     "@composurecdk/cloudwatch": "^0.11.0",
     "@composurecdk/core": "^0.11.0",
     "@composurecdk/eslint-plugin": "^0.11.0",
+    "@composurecdk/events": "^0.11.0",
     "@composurecdk/kms": "^0.11.0",
     "@composurecdk/lambda": "^0.11.0",
     "@composurecdk/s3": "^0.11.0",
