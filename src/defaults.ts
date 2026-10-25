@@ -4,7 +4,12 @@ import { createRuleBuilder, type IRuleBuilder, type RuleAlarmConfig } from "@com
 import { BlockPublicAccess, BucketEncryption, type LifecycleRule } from "aws-cdk-lib/aws-s3";
 import { QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { createBucketBuilder, type IBucketBuilder } from "@composurecdk/s3";
-import { createQueueBuilder, type IQueueBuilder, type QueueAlarmConfig } from "@composurecdk/sqs";
+import {
+  createQueueBuilder,
+  DLQ_QUEUE_DEFAULTS,
+  type IQueueBuilder,
+  type QueueAlarmConfig,
+} from "@composurecdk/sqs";
 
 /**
  * Lifecycle rules for the failure bucket. They replace composureCDK's bucket
@@ -60,7 +65,6 @@ export function failureBucketDefaults(): IBucketBuilder {
   return createBucketBuilder()
     .versioned(false)
     .lifecycleRules(DEFAULT_FAILURE_BUCKET_LIFECYCLE_RULES)
-    .eventBridgeEnabled(true)
     .removalPolicy(RemovalPolicy.RETAIN)
     .encryption(BucketEncryption.S3_MANAGED)
     .enforceSSL(true)
@@ -76,9 +80,21 @@ export function signalQueueDefaults(): IQueueBuilder<"dlq"> {
     .encryption(QueueEncryption.SQS_MANAGED);
 }
 
-/** The signal queue's alarms, for the queue's final retention. */
-export function signalQueueAlarms(retention: Duration): QueueAlarmConfig {
-  return {
+/** The signal rule's builder, before the consumer's `rule` callback. */
+export function signalRuleDefaults(): IRuleBuilder {
+  return createRuleBuilder().description(
+    "Signals each stream failure written to the failure bucket",
+  );
+}
+
+/**
+ * Applies the signal queue's alarms under any the consumer set. Called after
+ * the consumer's callback, so the age alarm tracks the queue's final retention.
+ */
+export function withSignalQueueAlarms(queue: IQueueBuilder<"dlq">): IQueueBuilder<"dlq"> {
+  // Unset only on a replacement builder a callback returned, which gets the role's retention.
+  const retention = queue.retentionPeriod() ?? DLQ_QUEUE_DEFAULTS.retentionPeriod;
+  const alarms: QueueAlarmConfig = {
     // Any message is a failure that needs attention.
     approximateNumberOfMessagesVisible: ALARM_ON_ANY,
     approximateAgeOfOldestMessage: {
@@ -88,27 +104,40 @@ export function signalQueueAlarms(retention: Duration): QueueAlarmConfig {
     // Nothing normally holds a signal in flight.
     approximateNumberOfMessagesNotVisible: false,
   };
+  return queue.recommendedAlarms(underConsumer(alarms, queue.recommendedAlarms()));
+}
+
+/** Applies the signal rule's alarms under any the consumer set. */
+export function withSignalRuleAlarms(rule: IRuleBuilder): IRuleBuilder {
+  const alarms: RuleAlarmConfig = {
+    // A signal EventBridge gave up delivering: the failure is stored but unsignalled.
+    failedInvocations: ALARM_ON_ANY,
+    // Throttling only delays delivery: EventBridge keeps retrying for 24 hours,
+    // and a signal it gives up on raises failedInvocations.
+    throttledRules: false,
+    // The target has no dead-letter queue (architecture D2), so these never
+    // emit. Revisit once laazyj/composureCDK#636 makes them conditional.
+    invocationsSentToDlq: false,
+    invocationsFailedToBeSentToDlq: false,
+  };
+  return rule.recommendedAlarms(underConsumer(alarms, rule.recommendedAlarms()));
 }
 
 /**
- * The signal rule's builder, before the consumer's `rule` callback. Its event
- * pattern, target and alarms are added by the capture builder.
+ * Capture's alarm config with the consumer's on top, field by field, so a
+ * field the consumer leaves out keeps capture's value rather than falling back
+ * to the library's. `false`, for all alarms or for one, wins outright.
  */
-export function signalRuleDefaults(): IRuleBuilder {
-  return createRuleBuilder().description(
-    "Signals each stream failure written to the failure bucket",
-  );
+function underConsumer<C extends object>(capture: C, consumer: C | false | undefined): C | false {
+  if (consumer === false) return false;
+  const merged: Record<string, unknown> = { ...(capture as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(consumer ?? {})) {
+    const pinned = merged[key];
+    merged[key] = isObject(pinned) && isObject(value) ? { ...pinned, ...value } : value;
+  }
+  return merged as C;
 }
 
-/** The signal rule's alarms. */
-export const SIGNAL_RULE_ALARMS: RuleAlarmConfig = {
-  // A signal that EventBridge gave up delivering: the failure is stored but unsignalled.
-  failedInvocations: ALARM_ON_ANY,
-  // Throttling only delays delivery: EventBridge keeps retrying for 24 hours,
-  // and a signal it gives up on raises failedInvocations.
-  throttledRules: false,
-  // The target has no dead-letter queue (architecture D2), so these never
-  // emit. Revisit once laazyj/composureCDK#636 makes them conditional.
-  invocationsSentToDlq: false,
-  invocationsFailedToBeSentToDlq: false,
-};
+function isObject(value: unknown): value is object {
+  return typeof value === "object" && value !== null;
+}

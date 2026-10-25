@@ -198,6 +198,14 @@ describe("createStreamDlqCaptureBuilder", () => {
       template.allResourcesProperties("AWS::CloudWatch::Alarm", { Tags: team });
     });
 
+    it("keeps EventBridge on, whatever the bucket callback sets", () => {
+      synth(
+        createStreamDlqCaptureBuilder().bucket((b) => b.eventBridgeEnabled(false)),
+      ).template.hasResourceProperties("Custom::S3BucketNotifications", {
+        NotificationConfiguration: { EventBridgeConfiguration: {} },
+      });
+    });
+
     it("copies its configuration independently", () => {
       assertCopyPreservesState({
         factory: () => createStreamDlqCaptureBuilder(),
@@ -212,13 +220,7 @@ describe("createStreamDlqCaptureBuilder", () => {
     });
   });
 
-  describe("signal path guard", () => {
-    it("rejects a bucket with EventBridge switched off", () => {
-      expect(() =>
-        build(createStreamDlqCaptureBuilder().bucket((b) => b.eventBridgeEnabled(false))),
-      ).toThrow(/must keep eventBridgeEnabled/);
-    });
-
+  describe("lifetime guard", () => {
     it("rejects an expiry that doesn't outlast the queue's retention", () => {
       expect(() =>
         build(
@@ -241,19 +243,14 @@ describe("createStreamDlqCaptureBuilder", () => {
     it("checks a replacement builder that a callback returns", () => {
       const replaced = (expiration: Duration) =>
         createStreamDlqCaptureBuilder()
-          .bucket(() =>
-            createBucketBuilder()
-              .eventBridgeEnabled(true)
-              .lifecycleRules([{ id: "Replaced", expiration }]),
-          )
+          .bucket(() => createBucketBuilder().lifecycleRules([{ id: "Replaced", expiration }]))
           .queue(() => createQueueBuilder("dlq"));
       expect(() => build(replaced(Duration.days(14)))).toThrow(/"Replaced".*retention \(14 days\)/);
+    });
+
+    it("passes a bucket with no lifecycle rules", () => {
       expect(() =>
-        build(
-          createStreamDlqCaptureBuilder().bucket(() =>
-            createBucketBuilder().eventBridgeEnabled(true),
-          ),
-        ),
+        build(createStreamDlqCaptureBuilder().bucket((b) => b.lifecycleRules([]))),
       ).not.toThrow();
     });
 

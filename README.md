@@ -67,12 +67,12 @@ compose(
 
 Capture is itself a composed system of three components, built under its `id` like any nested system:
 
-| Component | What                                                                                                                                                                          |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bucket`  | The failure bucket: versioning off, objects expire after 90 days, EventBridge on, RETAIN, SSE-S3, TLS enforced, public access blocked, and access logs to its own logs bucket |
-| `queue`   | The signal queue, in composureCDK's `"dlq"` role: 14-day retention, SSE-SQS, 1-minute visibility timeout                                                                      |
-| `rule`    | An EventBridge rule on the default bus: `aws.s3` / `Object Created` / this bucket, targeting the queue                                                                        |
-| Alarms    | Queue depth > 0; oldest message ≥ 75% of retention; the rule's `FailedInvocations` > 0                                                                                        |
+| Component | What                                                                                                                                                                             |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bucket`  | The failure bucket: versioning off, objects expire after 90 days, EventBridge on, RETAIN, SSE-S3, TLS enforced, public access blocked, and access logs to its own logs bucket    |
+| `queue`   | The signal queue, in composureCDK's `"dlq"` role: 14-day retention, SSE-SQS, 1-minute visibility timeout                                                                         |
+| `rule`    | An EventBridge rule on the default bus: `aws.s3` / `Object Created` / this bucket, targeting the queue, described as "Signals each stream failure written to the failure bucket" |
+| Alarms    | Queue depth > 0; oldest message ≥ 75% of retention; the rule's `FailedInvocations` > 0                                                                                           |
 
 The build result returns each component as its composureCDK builder does: `result.bucket` (`bucket`, `accessLogsBucket`, `alarms`), `result.queue` (`queue`, `alarms`) and `result.rule` (`rule`, `targets`, `alarms`).
 
@@ -91,7 +91,7 @@ createStreamDlqCaptureBuilder()
   .rule((r) => r.description("Orders stream failures"));
 ```
 
-`build()` throws if the bucket no longer sends events to EventBridge, or if any lifecycle rule expires objects before the queue's retention ends: a failure would be deleted while its signal is still waiting. Alarms you set with `recommendedAlarms` on the queue or the rule override capture's field by field; `recommendedAlarms(false)` turns them all off.
+Capture sets the signal path after your callbacks, so they can't remove it: EventBridge on the bucket, and the rule's event pattern and queue target. `build()` throws if any lifecycle rule expires objects before the queue's retention ends, since a failure would be deleted while its signal is still waiting. Alarms you set with `recommendedAlarms` on the queue or the rule override capture's field by field; `recommendedAlarms(false)` turns them all off.
 
 ## Operating it
 
