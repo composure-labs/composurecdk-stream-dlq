@@ -4,9 +4,6 @@ This document describes the **capture** half of `@composure-labs/composurecdk-st
 
 The design comes from [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623). The behaviour described below was observed in a real AWS account during the [spike](https://github.com/laazyj/composureCDK/issues/623#issuecomment-6396650770) and [its follow-up](https://github.com/laazyj/composureCDK/issues/623#issuecomment-6397908967), unless a statement says it is untested.
 
-> [!NOTE]
-> `s3OnFailure` in the sketches below is illustrative until the grant helper is implemented.
-
 ## The problem
 
 A Lambda function consuming a DynamoDB stream or a Kinesis data stream eventually exhausts its retries on some batch. Those records only exist for the stream's retention window, 24 hours for DynamoDB, so the failed batch has to be stored durably before the window closes. The on-call also has to hear about it while there is still time to act.

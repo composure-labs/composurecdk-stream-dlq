@@ -9,7 +9,7 @@
 **No-loss failure capture for Lambda stream consumers, built on [composureCDK](https://github.com/laazyj/composureCDK).**
 
 > [!WARNING]
-> **Pre-release.** Capture is implemented; the narrow `s3OnFailure` grant helper, customer-managed keys and the replay function are still to come. The design is in [docs/architecture.md](docs/architecture.md), and the plan in [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623).
+> **Pre-release.** Capture and the `s3OnFailure` destination are implemented; customer-managed keys and the replay function are still to come. The design is in [docs/architecture.md](docs/architecture.md), and the plan in [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623).
 
 A Lambda consuming DynamoDB Streams (and, later, Kinesis) eventually exhausts its retries on some batch. The records only live for the stream's retention window, so the failed batch has to be captured somewhere durable before that window closes, and the on-call has to hear about it with hours to spare. This package provides:
 
@@ -32,7 +32,10 @@ import { Code, Runtime, StartingPosition } from "aws-cdk-lib/aws-lambda";
 import { compose, ref } from "@composurecdk/core";
 import { createTableV2Builder } from "@composurecdk/dynamodb";
 import { createFunctionBuilder, dynamoEventSource } from "@composurecdk/lambda";
-import { createStreamDlqCaptureBuilder } from "@composure-labs/composurecdk-stream-dlq";
+import {
+  createStreamDlqCaptureBuilder,
+  s3OnFailure,
+} from "@composure-labs/composurecdk-stream-dlq";
 
 compose(
   {
@@ -53,7 +56,6 @@ compose(
           {
             startingPosition: StartingPosition.TRIM_HORIZON,
             retryAttempts: 3,
-            // Planned: the narrow grant helper (architecture D8).
             onFailure: s3OnFailure(ref("failures")),
           },
         ),
@@ -62,6 +64,8 @@ compose(
   { orders: [], failures: [], processor: ["orders", "failures"] },
 );
 ```
+
+`s3OnFailure(ref("failures"))` names the failure bucket as the mapping's on-failure destination, and grants the processor only what Lambda needs to write a failure there, where CDK's `S3OnFailureDestination` grants read and write ([D8](docs/architecture.md#decisions)).
 
 ## What capture builds
 
