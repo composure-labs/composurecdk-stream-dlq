@@ -66,7 +66,7 @@ compose(
 
 ## What capture builds
 
-Capture is itself a composed system of four components, built under its `id` like any nested system:
+Capture is itself a composed system of four components. It builds everything under one construct named after its `id`, each component under its key (`App--failures/bucket`), so it shows as one node in the construct tree and the CloudFormation console:
 
 | Component | What                                                                                                                                                                             |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -87,7 +87,7 @@ Each alarm fires on one 1-minute datapoint, with missing data not breaching. If 
 
 **Keep `id` stable.** The bucket is retained and is the only copy of the data, so renaming the component orphans it and creates a new one.
 
-**CDK adds a `BucketNotificationsHandler`** to the stack: a singleton custom-resource Lambda that switches EventBridge on at deploy. It doesn't run otherwise. On aws-cdk-lib releases before the handler's policy was scoped, its `s3:PutBucketNotification` permission is on `*`. Manage the failure bucket's notifications only through CDK, since replacing its notification configuration out of band switches the signal off.
+**CDK adds a `BucketNotificationsHandler`** to the stack, the one resource outside capture's construct: a singleton custom-resource Lambda that switches EventBridge on at deploy. It doesn't run otherwise. On aws-cdk-lib releases before the handler's policy was scoped, its `s3:PutBucketNotification` permission is on `*`. Manage the failure bucket's notifications only through CDK, since replacing its notification configuration out of band switches the signal off.
 
 ## Customising
 

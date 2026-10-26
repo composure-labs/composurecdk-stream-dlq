@@ -1,4 +1,4 @@
-import { App, CfnParameter, Duration, Stack } from "aws-cdk-lib";
+import { App, CfnParameter, CfnResource, Duration, Stack } from "aws-cdk-lib";
 import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { compose } from "@composurecdk/core";
@@ -35,11 +35,20 @@ describe("createStreamDlqCaptureBuilder", () => {
 
     it("pins its logical ids, which the retained bucket depends on", () => {
       expect(logicalIds(template, "AWS::S3::Bucket")).toEqual([
-        "Failuresbucket5560B8FC",
-        "FailuresbucketAccessLogs3A7592D3",
+        "Failuresbucket60D558A4",
+        "FailuresbucketAccessLogs621B1FEF",
       ]);
-      expect(logicalIds(template, "AWS::SQS::Queue")).toEqual(["Failuresqueue2F8B3563"]);
-      expect(logicalIds(template, "AWS::Events::Rule")).toEqual(["Failuresrule712D9F28"]);
+      expect(logicalIds(template, "AWS::SQS::Queue")).toEqual(["Failuresqueue2DDD92D3"]);
+      expect(logicalIds(template, "AWS::Events::Rule")).toEqual(["FailuresruleC90CB086"]);
+    });
+
+    it("builds everything under one construct, apart from CDK's per-stack notifications handler", () => {
+      const outside = Stack.of(result.bucket.bucket)
+        .node.findAll()
+        .filter((c) => CfnResource.isCfnResource(c))
+        .map((c) => c.node.path)
+        .filter((path) => !/^Test\/(Failures|BucketNotificationsHandler[^/]*)\//.test(path));
+      expect(outside).toEqual([]);
     });
 
     it("builds an unversioned, retained failure bucket with the failure lifecycle", () => {
@@ -92,9 +101,9 @@ describe("createStreamDlqCaptureBuilder", () => {
         EventPattern: {
           source: ["aws.s3"],
           "detail-type": ["Object Created"],
-          detail: { bucket: { name: [{ Ref: "Failuresbucket5560B8FC" }] } },
+          detail: { bucket: { name: [{ Ref: "Failuresbucket60D558A4" }] } },
         },
-        Targets: [Match.objectLike({ Arn: { "Fn::GetAtt": ["Failuresqueue2F8B3563", "Arn"] } })],
+        Targets: [Match.objectLike({ Arn: { "Fn::GetAtt": ["Failuresqueue2DDD92D3", "Arn"] } })],
       });
       template.hasResourceProperties("AWS::SQS::QueuePolicy", {
         PolicyDocument: {
@@ -103,7 +112,7 @@ describe("createStreamDlqCaptureBuilder", () => {
               Action: Match.arrayWith(["sqs:SendMessage"]),
               Principal: { Service: "events.amazonaws.com" },
               Condition: {
-                ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": ["Failuresrule712D9F28", "Arn"] } },
+                ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": ["FailuresruleC90CB086", "Arn"] } },
               },
             }),
           ]),
@@ -327,6 +336,6 @@ describe("createStreamDlqCaptureBuilder", () => {
       { failures: createStreamDlqCaptureBuilder() },
       { failures: [] },
     ).build(stack, "App");
-    expect(failures.bucket.bucket.node.path).toBe("Test/App--failures--bucket");
+    expect(failures.bucket.bucket.node.path).toBe("Test/App--failures/bucket");
   });
 });
