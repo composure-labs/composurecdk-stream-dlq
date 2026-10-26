@@ -2,8 +2,8 @@ import { App, CfnOutput, Duration, RemovalPolicy, Stack, Tags } from "aws-cdk-li
 import { AttributeType, StreamViewType } from "aws-cdk-lib/aws-dynamodb";
 import { Alarm, ComparisonOperator, Metric, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
 import { Rule } from "aws-cdk-lib/aws-events";
-import { Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
-import { SqsQueue } from "aws-cdk-lib/aws-events-targets";
+import { ArnPrincipal, Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
+import { SqsQueue, type SqsQueueProps } from "aws-cdk-lib/aws-events-targets";
 import { Key } from "aws-cdk-lib/aws-kms";
 import { Code, Runtime } from "aws-cdk-lib/aws-lambda";
 import { S3OnFailureDestination } from "aws-cdk-lib/aws-lambda-event-sources";
@@ -47,11 +47,52 @@ function outputs(stack: Stack, values: Record<string, string>): void {
   }
 }
 
-function alarmOutputs(stack: Stack, alarms: Record<string, { alarmName: string }>): void {
+function alarmOutputs(
+  stack: Stack,
+  alarms: Record<string, { alarmName: string }>,
+  prefix = "SignalAlarm",
+): void {
   outputs(
     stack,
-    Object.fromEntries(Object.entries(alarms).map(([k, a]) => [`SignalAlarm${k}`, a.alarmName])),
+    Object.fromEntries(Object.entries(alarms).map(([k, a]) => [`${prefix}${k}`, a.alarmName])),
   );
+}
+
+/**
+ * The EventBridge signal: this bucket's Object Created events to the queue,
+ * with a `FailedInvocations` alarm on the rule. Outputs `RuleName` and
+ * `RuleFailedAlarm`.
+ */
+function signalRule(
+  stack: Stack,
+  bucket: Bucket,
+  queue: Queue,
+  options: { target?: SqsQueueProps; ruleName?: string } = {},
+): Rule {
+  const rule = new Rule(stack, "FailureObjectCreated", {
+    ruleName: options.ruleName,
+    eventPattern: {
+      source: ["aws.s3"],
+      detailType: ["Object Created"],
+      detail: { bucket: { name: [bucket.bucketName] } },
+    },
+    targets: [new SqsQueue(queue, options.target)],
+  });
+  const failedInvocations = new Alarm(stack, "RuleFailedInvocations", {
+    metric: new Metric({
+      namespace: "AWS/Events",
+      metricName: "FailedInvocations",
+      dimensionsMap: { RuleName: rule.ruleName },
+      statistic: "Sum",
+      period: Duration.minutes(1),
+    }),
+    threshold: 0,
+    comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+    evaluationPeriods: 1,
+    treatMissingData: TreatMissingData.NOT_BREACHING,
+  });
+  outputs(stack, { RuleName: rule.ruleName, RuleFailedAlarm: failedInvocations.alarmName });
+  return rule;
 }
 
 type SignalQueueBuilder = ReturnType<typeof signalQueue>;
@@ -72,6 +113,8 @@ export function captureStack(
     consumerNotification?: boolean;
     /** Deny EventBridge on the queue, with no retries, to see what a lost signal leaves behind. */
     denyDelivery?: boolean;
+    /** Open item F1: deny the processor's role `s3:PutObject` on the failure bucket. */
+    denyDestinationWrite?: boolean;
   },
 ): Stack {
   const stack = newStack(app, name);
@@ -140,33 +183,14 @@ export function captureStack(
         }),
       );
     }
-    const rule = new Rule(stack, "FailureObjectCreated", {
-      eventPattern: {
-        source: ["aws.s3"],
-        detailType: ["Object Created"],
-        detail: { bucket: { name: [failureBucketConstruct.bucketName] } },
-      },
-      targets: [
-        new SqsQueue(
-          queue,
-          options.denyDelivery ? { retryAttempts: 0, maxEventAge: Duration.minutes(1) } : {},
-        ),
-      ],
-    });
-    const failedInvocations = new Alarm(stack, "RuleFailedInvocations", {
-      metric: new Metric({
-        namespace: "AWS/Events",
-        metricName: "FailedInvocations",
-        dimensionsMap: { RuleName: rule.ruleName },
-        statistic: "Sum",
-        period: Duration.minutes(1),
-      }),
-      threshold: 0,
-      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
-      evaluationPeriods: 1,
-      treatMissingData: TreatMissingData.NOT_BREACHING,
-    });
-    outputs(stack, { RuleName: rule.ruleName, RuleFailedAlarm: failedInvocations.alarmName });
+    signalRule(
+      stack,
+      failureBucketConstruct,
+      queue,
+      options.denyDelivery
+        ? { target: { retryAttempts: 0, maxEventAge: Duration.minutes(1) } }
+        : {},
+    );
   }
 
   if (options.consumerNotification) {
@@ -180,6 +204,17 @@ export function captureStack(
   }
 
   const fn = results.processor.function;
+  if (options.denyDestinationWrite && fn.role) {
+    // An explicit deny beats the grant S3OnFailureDestination adds to the role.
+    failureBucketConstruct.addToResourcePolicy(
+      new PolicyStatement({
+        effect: Effect.DENY,
+        principals: [new ArnPrincipal(fn.role.roleArn)],
+        actions: ["s3:PutObject"],
+        resources: [failureBucketConstruct.arnForObjects("*")],
+      }),
+    );
+  }
   outputs(stack, {
     TableName: results.table.table.tableName,
     ProcessorName: fn.functionName,
@@ -188,6 +223,7 @@ export function captureStack(
     QueueUrl: queue.queueUrl,
   });
   alarmOutputs(stack, results.signal.alarms);
+  alarmOutputs(stack, results.processor.alarms, "ProcessorAlarm");
 
   if (options.replay) {
     const replay = createFunctionBuilder()
@@ -240,6 +276,66 @@ export function signalOnlyStack(
   outputs(stack, {
     BucketName: results.failures.bucket.bucketName,
     QueueUrl: results.signal.queue.queueUrl,
+  });
+  alarmOutputs(stack, results.signal.alarms);
+  return stack;
+}
+
+/**
+ * Open item F14: bucket → EventBridge → a CMK-encrypted queue, with no stream.
+ *
+ * - `cdk`: the key is the queue's own, so CDK writes whatever key statement
+ *   the SqsQueue target and grantSendMessages produce for EventBridge.
+ * - `scoped`: the queue sees an imported key, so CDK adds nothing; the key
+ *   policy gets the documented statement for EventBridge, scoped to the rule
+ *   with `aws:SourceArn` and `aws:SourceAccount`. The rule is named, so the
+ *   key can name its ARN: referencing the rule itself is a cycle (key → rule
+ *   → queue → key).
+ * - `none`: as `scoped`, without the statement: key policy drift.
+ */
+export function cmkEventBridgeStack(
+  app: App,
+  name: string,
+  keyPolicy: "cdk" | "scoped" | "none",
+): Stack {
+  const stack = newStack(app, name);
+  const key = spikeKey(stack);
+  const results = compose(
+    {
+      failures: failureBucket().eventBridgeEnabled(true),
+      signal: signalQueue()
+        .encryption(QueueEncryption.KMS)
+        .encryptionMasterKey(
+          keyPolicy === "cdk" ? key : Key.fromKeyArn(stack, "Imported", key.keyArn),
+        ),
+    },
+    { failures: [], signal: [] },
+  ).build(stack, "Capture");
+  const ruleName = `${stack.stackName}-FailureObjectCreated`;
+  signalRule(stack, results.failures.bucket, results.signal.queue, { ruleName });
+  if (keyPolicy === "scoped") {
+    key.addToResourcePolicy(
+      new PolicyStatement({
+        principals: [new ServicePrincipal("events.amazonaws.com")],
+        actions: ["kms:GenerateDataKey", "kms:Decrypt"],
+        resources: ["*"],
+        conditions: {
+          ArnEquals: {
+            "aws:SourceArn": stack.formatArn({
+              service: "events",
+              resource: "rule",
+              resourceName: ruleName,
+            }),
+          },
+          StringEquals: { "aws:SourceAccount": stack.account },
+        },
+      }),
+    );
+  }
+  outputs(stack, {
+    BucketName: results.failures.bucket.bucketName,
+    QueueUrl: results.signal.queue.queueUrl,
+    KeyArn: key.keyArn,
   });
   alarmOutputs(stack, results.signal.alarms);
   return stack;

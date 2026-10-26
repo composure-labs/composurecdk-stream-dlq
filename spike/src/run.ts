@@ -14,6 +14,7 @@ import {
   CloudWatchClient,
   DescribeAlarmHistoryCommand,
   DescribeAlarmsCommand,
+  GetMetricDataCommand,
 } from "@aws-sdk/client-cloudwatch";
 import {
   CloudWatchLogsClient,
@@ -23,9 +24,11 @@ import {
 } from "@aws-sdk/client-cloudwatch-logs";
 import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
 import {
+  GetEventSourceMappingCommand,
   GetFunctionConfigurationCommand,
   InvokeCommand,
   LambdaClient,
+  ListEventSourceMappingsCommand,
   UpdateFunctionConfigurationCommand,
 } from "@aws-sdk/client-lambda";
 import {
@@ -38,7 +41,12 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { GetQueueAttributesCommand, ReceiveMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
+import {
+  GetQueueAttributesCommand,
+  ReceiveMessageCommand,
+  SetQueueAttributesCommand,
+  SQSClient,
+} from "@aws-sdk/client-sqs";
 
 const cfn = new CloudFormationClient({});
 const cw = new CloudWatchClient({});
@@ -223,6 +231,50 @@ async function alarmHistory(name: string, since: number) {
     summary: h.HistorySummary,
   }));
 }
+
+/** Each metric's 1-minute sums since `since`, as `{ minute: sum }`. */
+async function metricSums(
+  namespace: string,
+  dimensions: Record<string, string>,
+  names: string[],
+  since: number,
+) {
+  const out = await cw.send(
+    new GetMetricDataCommand({
+      StartTime: new Date(since - 60_000),
+      EndTime: new Date(),
+      MetricDataQueries: names.map((name, i) => ({
+        Id: `m${String(i)}`,
+        Label: name,
+        MetricStat: {
+          Metric: {
+            Namespace: namespace,
+            MetricName: name,
+            Dimensions: Object.entries(dimensions).map(([Name, Value]) => ({ Name, Value })),
+          },
+          Period: 60,
+          Stat: "Sum",
+        },
+      })),
+    }),
+  );
+  return Object.fromEntries(
+    (out.MetricDataResults ?? []).map((r) => [
+      r.Label ?? "",
+      Object.fromEntries(
+        (r.Timestamps ?? []).map((t, i) => [t.toISOString().slice(11, 16), r.Values?.[i]]),
+      ),
+    ]),
+  );
+}
+
+/** EventBridge's per-rule delivery metrics. */
+const RULE_METRICS = [
+  "MatchedEvents",
+  "Invocations",
+  "FailedInvocations",
+  "RetryInvocationAttempts",
+];
 
 async function invokeReplay(name: string) {
   const started = Date.now();
@@ -513,6 +565,162 @@ const scenarios: Record<string, () => Promise<void>> = {
       objectStillInBucket: (objects.Contents ?? []).length > 0,
       ageAlarmHistory: await alarmHistory(o.SignalAlarmapproximateAgeOfOldestMessage, putAt),
       depthAlarmHistory: await alarmHistory(o.SignalAlarmapproximateNumberOfMessagesVisible, putAt),
+    });
+  },
+
+  /**
+   * F14: does EventBridge deliver to a CMK-encrypted queue, and does a key
+   * policy without its statement surface as the rule's FailedInvocations?
+   * Run once per stack: CmkCdk, CmkScoped, CmkNoPolicy.
+   */
+  async f14() {
+    const stack = process.argv[3] ?? "CmkScoped";
+    const o = await outputs(stack);
+    const key = `aws/lambda/spike/f14-${String(Date.now())}`;
+    const putAt = Date.now();
+    await s3.send(new PutObjectCommand({ Bucket: o.BucketName, Key: key, Body: "{}" }));
+    const message = await waitFor(
+      "message",
+      async () => (await peek(o.QueueUrl, 1)).find((m) => JSON.stringify(m.body).includes(key)),
+      180,
+      5,
+    );
+    // Rule metrics publish a few minutes late; FailedInvocations is the drift signal.
+    const failedAlarm = await waitFor(
+      "rule FailedInvocations alarm",
+      async () =>
+        (await alarmStates([o.RuleFailedAlarm]))[o.RuleFailedAlarm] === "ALARM" ? true : undefined,
+      message ? 1 : 600,
+      20,
+    );
+    save(`f14-${stack}`, {
+      delivered: message !== undefined,
+      seconds: message ? (message.sentAt - putAt) / 1000 : null,
+      ruleFailedAlarmReachedAlarm: failedAlarm === true,
+      ruleMetrics: await metricSums("AWS/Events", { RuleName: o.RuleName }, RULE_METRICS, putAt),
+      ruleFailedAlarmHistory: await alarmHistory(o.RuleFailedAlarm, putAt),
+    });
+  },
+
+  /**
+   * F1: the mapping can't write its failure object (the bucket policy denies
+   * the processor's role). Does anything raise it: the mapping's
+   * DroppedEventCount, composureCDK's processor alarms, the mapping's state?
+   */
+  async f1() {
+    const o = await outputs("DestinationDenied");
+    await setMode(o.ProcessorName, "throw");
+    const pk = `f1-${String(Date.now())}`;
+    const putAt = await putItem(o.TableName, pk);
+    const object = await waitForObject(o.BucketName, putAt, 240);
+    log(object ? `unexpected failure object ${object.key}` : "no failure object, as expected");
+
+    const mappings = await lambda.send(
+      new ListEventSourceMappingsCommand({ FunctionName: o.ProcessorName }),
+    );
+    const uuid = mappings.EventSourceMappings?.[0]?.UUID ?? "";
+    const processorAlarms = Object.entries(o)
+      .filter(([key]) => key.startsWith("ProcessorAlarm"))
+      .map(([, name]) => name);
+    // ESM metrics publish late: sample for 10 minutes.
+    const samples: unknown[] = [];
+    const sampleFrom = Date.now();
+    for (let minute = 1; minute <= 10; minute++) {
+      await sleep(minute * 60_000 - (Date.now() - sampleFrom));
+      samples.push({ minute, alarms: await alarmStates(processorAlarms) });
+      log(JSON.stringify(samples.at(-1)));
+    }
+    const mapping = await lambda.send(new GetEventSourceMappingCommand({ UUID: uuid }));
+    save("f1", {
+      failureObjectWritten: object !== undefined,
+      invocations: (await invocationsFor(o.ProcessorLogGroup, pk, putAt - 5000)).length,
+      mapping: {
+        state: mapping.State,
+        lastProcessingResult: mapping.LastProcessingResult,
+        destinationConfig: mapping.DestinationConfig,
+      },
+      esmMetrics: await metricSums(
+        "AWS/Lambda",
+        { EventSourceMappingUUID: uuid },
+        [
+          "PolledEventCount",
+          "FailedInvokeEventCount",
+          "DroppedEventCount",
+          "OnFailureDestinationDeliveredEventCount",
+        ],
+        putAt,
+      ),
+      functionMetrics: await metricSums(
+        "AWS/Lambda",
+        { FunctionName: o.ProcessorName },
+        ["Errors", "DestinationDeliveryFailures"],
+        putAt,
+      ),
+      alarmSamples: samples,
+      alarmHistory: Object.fromEntries(
+        await Promise.all(processorAlarms.map(async (a) => [a, await alarmHistory(a, putAt)])),
+      ),
+    });
+  },
+
+  /**
+   * F5's recovery window: deny EventBridge on the queue, write an object,
+   * restore the policy after `holdMinutes` (default 5), then see whether the
+   * default retry policy delivers the signal late. The policy is restored
+   * even if the run fails.
+   */
+  async f5() {
+    const o = await outputs("SignalRetry");
+    const holdMinutes = Number(process.argv[3] ?? 5);
+    const original = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: o.QueueUrl,
+        AttributeNames: ["Policy", "QueueArn"],
+      }),
+    );
+    const policy = original.Attributes?.Policy ?? "";
+    const denied = JSON.parse(policy) as { Statement: unknown[] };
+    denied.Statement.push({
+      Sid: "SpikeF5Deny",
+      Effect: "Deny",
+      Principal: { Service: "events.amazonaws.com" },
+      Action: "sqs:SendMessage",
+      Resource: original.Attributes?.QueueArn,
+    });
+    const setPolicy = (value: string) =>
+      sqs.send(
+        new SetQueueAttributesCommand({ QueueUrl: o.QueueUrl, Attributes: { Policy: value } }),
+      );
+
+    const key = `aws/lambda/spike/f5-${String(Date.now())}`;
+    let putAt = 0;
+    let restoredAt = 0;
+    try {
+      await setPolicy(JSON.stringify(denied));
+      log("queue policy denies EventBridge; waiting 60s for it to propagate");
+      await sleep(60_000);
+      putAt = Date.now();
+      await s3.send(new PutObjectCommand({ Bucket: o.BucketName, Key: key, Body: "{}" }));
+      log(`object written; holding the deny for ${String(holdMinutes)} min`);
+      await sleep(holdMinutes * 60_000);
+    } finally {
+      await setPolicy(policy);
+      restoredAt = Date.now();
+      log("queue policy restored");
+    }
+    const message = await waitFor(
+      "late signal",
+      async () => (await peek(o.QueueUrl, 1)).find((m) => JSON.stringify(m.body).includes(key)),
+      30 * 60,
+      30,
+    );
+    save("f5", {
+      holdMinutes,
+      delivered: message !== undefined,
+      secondsPutToMessage: message ? (message.sentAt - putAt) / 1000 : null,
+      secondsRestoreToMessage: message ? (message.sentAt - restoredAt) / 1000 : null,
+      ruleMetrics: await metricSums("AWS/Events", { RuleName: o.RuleName }, RULE_METRICS, putAt),
+      ruleFailedAlarmHistory: await alarmHistory(o.RuleFailedAlarm, putAt),
     });
   },
 

@@ -1,6 +1,12 @@
 import { App, Duration } from "aws-cdk-lib";
 import { Key } from "aws-cdk-lib/aws-kms";
-import { captureStack, QueueEncryption, signalOnlyStack, spikeKey } from "../src/stacks.js";
+import {
+  captureStack,
+  cmkEventBridgeStack,
+  QueueEncryption,
+  signalOnlyStack,
+  spikeKey,
+} from "../src/stacks.js";
 
 const app = new App();
 // Scenario 1 redeploys Direct with `-c notifyPrefix=…` to change the notification.
@@ -9,8 +15,21 @@ const notifyPrefix = app.node.tryGetContext("notifyPrefix") as string | undefine
 const floor = app.node.tryGetContext("floor") === "true";
 
 const followUp = app.node.tryGetContext("followUp") === "true";
+// The architecture doc's open items: F14, F1 and F5.
+const openItems = app.node.tryGetContext("openItems") === "true";
 
-if (followUp) {
+if (openItems) {
+  cmkEventBridgeStack(app, "CmkCdk", "cdk");
+  cmkEventBridgeStack(app, "CmkScoped", "scoped");
+  cmkEventBridgeStack(app, "CmkNoPolicy", "none");
+  captureStack(app, "DestinationDenied", {
+    signal: "eventbridge",
+    replay: false,
+    denyDestinationWrite: true,
+  });
+  // Default retry policy (185 attempts over 24 hours), for F5's recovery window.
+  captureStack(app, "SignalRetry", { signal: "eventbridge", replay: false });
+} else if (followUp) {
   // Follow-up 1: EventBridge without BucketNotificationsHandler, alone and beside a consumer notification.
   captureStack(app, "NoHandler", { signal: "eventbridge-native", replay: false });
   captureStack(app, "NoHandlerShared", {
