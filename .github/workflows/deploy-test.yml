@@ -1,0 +1,70 @@
+name: Deploy Test
+
+# Deploys the README's example to the sandbox account, forces one stream
+# failure through it, and checks capture end to end; see functional/README.md.
+# Manual for now. It becomes the release gate once releases are cut.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run at a time: every run deploys the same stack name.
+  group: deploy-test-sandbox
+  cancel-in-progress: false
+
+jobs:
+  deploy-test:
+    name: Deploy, fail once, verify, destroy
+    runs-on: ubuntu-latest
+    # A new event source mapping can take minutes to start, and the alarm
+    # needs a few more to fire and clear.
+    timeout-minutes: 60
+    environment: sandbox
+    permissions:
+      contents: read
+      id-token: write # Required for AWS OIDC
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          # No dependency cache in a job holding credentials.
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The stack imports this package from dist/, as a consumer would.
+      - name: Build
+        run: npm run build
+
+      - name: Configure AWS credentials
+        id: credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy
+        working-directory: functional
+        run: npx cdk deploy --require-approval never
+
+      - name: Fail once and verify capture
+        working-directory: functional
+        run: node run.ts
+
+      # Runs after a failed deploy or verify too, so a run never leaves the
+      # stack behind; there is nothing to destroy without credentials.
+      # cleanDeskPolicy makes every resource deletable.
+      - name: Destroy
+        if: always() && steps.credentials.outcome == 'success'
+        working-directory: functional
+        run: npx cdk destroy --force

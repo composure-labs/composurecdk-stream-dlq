@@ -37,6 +37,7 @@
   "scripts": {
     "build": "tshy",
     "typecheck": "tsc --noEmit",
+    "typecheck:functional": "tsc -p functional",
     "test": "vitest run",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -44,7 +45,7 @@
     "check:exports": "attw --pack . --profile node16 && publint",
     "check:peers": "node scripts/check-peer-mirror.mjs",
     "check:consumer": "node scripts/consumer-smoke.mjs",
-    "verify": "npm run format:check && npm run typecheck && npm run lint && npm run check:peers && npm run build && npm run check:exports && npm test",
+    "verify": "npm run format:check && npm run typecheck && npm run typecheck:functional && npm run lint && npm run check:peers && npm run build && npm run check:exports && npm test",
     "prepare": "husky"
   },
   "lint-staged": {
@@ -71,9 +72,16 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
+    "@aws-sdk/client-cloudformation": "^3.1156.0",
+    "@aws-sdk/client-cloudwatch": "^3.1156.0",
+    "@aws-sdk/client-dynamodb": "^3.1156.0",
+    "@aws-sdk/client-lambda": "^3.1156.0",
+    "@aws-sdk/client-s3": "^3.1156.0",
+    "@aws-sdk/client-sqs": "^3.1156.0",
     "@composurecdk/cloudformation": "^0.11.0",
     "@composurecdk/cloudwatch": "^0.11.0",
     "@composurecdk/core": "^0.11.0",
+    "@composurecdk/dynamodb": "^0.11.1",
     "@composurecdk/eslint-plugin": "^0.11.0",
     "@composurecdk/events": "^0.11.0",
     "@composurecdk/kms": "^0.11.0",
@@ -85,6 +93,7 @@
     "@kjanat/actionlint": "1.17.0",
     "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.3",
+    "aws-cdk": "^2.1146.1",
     "aws-cdk-lib": "^2.184.0",
     "constructs": "^10.8.1",
     "eslint": "^10.12.0",

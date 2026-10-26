@@ -24,9 +24,11 @@ npm run check:consumer  # pack, install as a consumer would, load through import
 npx actionlint          # only if you changed .github/workflows/
 ```
 
+The [deploy test](functional/README.md) runs against the sandbox account, so it is a manual workflow, not a gate.
+
 Auto-fix with `npm run format` and `npx eslint . --fix`. If you change `.github/workflows/` or `dependabot.yml`, CI also runs [zizmor](https://docs.zizmor.sh); fix its findings, or suppress one with a reason.
 
-**Keep `verify` fast.** Unlike composureCDK, this repo has no task cache, so the pre-push hook re-runs every gate on every push. It prints how long it took. It's about 4 seconds today. If it grows past about 30 seconds, move the slow gates to CI only rather than training people to `--no-verify`.
+**Keep `verify` fast.** Unlike composureCDK, this repo has no task cache, so the pre-push hook re-runs every gate on every push. It prints how long it took. It's about 20 seconds today. If it grows past about 30 seconds, move the slow gates to CI only rather than training people to `--no-verify`.
 
 ## Project rules
 

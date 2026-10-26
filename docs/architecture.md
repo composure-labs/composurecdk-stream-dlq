@@ -144,14 +144,11 @@ compose(
       // ...runtime, handler, code...
       .addEventSource(
         "orders",
-        dynamoEventSource(
-          ref("orders", (r) => r.table),
-          {
-            startingPosition: StartingPosition.TRIM_HORIZON,
-            retryAttempts: 3,
-            onFailure: s3OnFailure(ref("failures")),
-          },
-        ),
+        dynamoEventSource(ref<TableV2BuilderResult>("orders").get("table"), {
+          startingPosition: StartingPosition.TRIM_HORIZON,
+          retryAttempts: 3,
+          onFailure: s3OnFailure(ref("failures")),
+        }),
       ),
   },
   { orders: [], failures: [], processor: ["orders", "failures"] },
@@ -254,7 +251,7 @@ The system has several moving parts, so this section follows the shape of a **Fa
 ## Testing
 
 - **Unit and synth tests** in CI: construct paths, defaults, the lifetime guard and the grant.
-- **A functional test before every release**, like composureCDK's sandbox deploy. It deploys a capture stack to the sandbox account, waits for the event source mapping to be `Enabled`, forces one failure, and checks that the object lands, the signal arrives, and the depth alarm fires and then clears. Then it tears everything down.
+- **A functional test before every release** ([functional/](../functional/README.md)), like composureCDK's sandbox deploy. It deploys a capture stack to the sandbox account, waits for the event source mapping to be `Enabled`, forces one failure, and checks that the object lands, the signal arrives, and the depth alarm fires and then clears. Then it tears everything down.
   - Teardown uses a copy of composureCDK's `cleanDeskPolicy`. Any extension it needs is raised as a PR on both copies.
   - The spike showed the test must poll: queue counts lag by 30 s or more, and a new mapping takes minutes to start reading.
 

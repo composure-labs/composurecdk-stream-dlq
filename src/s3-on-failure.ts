@@ -24,7 +24,7 @@ import type { StreamDlqCaptureResult } from "./capture-builder.js";
  *
  * @example
  * ```ts
- * dynamoEventSource(ref("orders", (r) => r.table), {
+ * dynamoEventSource(ref<TableV2BuilderResult>("orders").get("table"), {
  *   retryAttempts: 3,
  *   onFailure: s3OnFailure(ref("failures")),
  * });
