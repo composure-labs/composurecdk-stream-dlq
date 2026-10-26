@@ -1,6 +1,16 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  resolve: {
+    // functional/ imports this package by name, as a consumer does. Its synth
+    // test reads the source, so it needs no build; the deploy itself uses dist/.
+    alias: {
+      "@composure-labs/composurecdk-stream-dlq": fileURLToPath(
+        new URL("src/index.ts", import.meta.url),
+      ),
+    },
+  },
   test: {
     testTimeout: 20_000,
     env: {

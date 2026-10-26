@@ -30,7 +30,7 @@ Capture is a composed system you add to your own `compose` map, **in the same st
 import { AttributeType, StreamViewType } from "aws-cdk-lib/aws-dynamodb";
 import { Code, Runtime, StartingPosition } from "aws-cdk-lib/aws-lambda";
 import { compose, ref } from "@composurecdk/core";
-import { createTableV2Builder } from "@composurecdk/dynamodb";
+import { createTableV2Builder, type TableV2BuilderResult } from "@composurecdk/dynamodb";
 import { createFunctionBuilder, dynamoEventSource } from "@composurecdk/lambda";
 import {
   createStreamDlqCaptureBuilder,
@@ -51,14 +51,11 @@ compose(
       .code(Code.fromAsset("lambda"))
       .addEventSource(
         "orders",
-        dynamoEventSource(
-          ref("orders", (r) => r.table),
-          {
-            startingPosition: StartingPosition.TRIM_HORIZON,
-            retryAttempts: 3,
-            onFailure: s3OnFailure(ref("failures")),
-          },
-        ),
+        dynamoEventSource(ref<TableV2BuilderResult>("orders").get("table"), {
+          startingPosition: StartingPosition.TRIM_HORIZON,
+          retryAttempts: 3,
+          onFailure: s3OnFailure(ref("failures")),
+        }),
       ),
   },
   { orders: [], failures: [], processor: ["orders", "failures"] },

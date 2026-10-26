@@ -169,8 +169,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # functional/ is the deploy test's harness, not part of what is
+      # supported at the floor: its cleanDeskPolicy needs CDK's property
+      # injectors, which are newer than aws-cdk-lib's floor. The typecheck
+      # above already leaves it out.
       - name: Test
-        run: npm test
+        run: npm test -- --exclude "functional/**"
 
   # The one check the `main` ruleset requires. always() rather than
   # !cancelled(): a cancelled run must fail this check, because a required

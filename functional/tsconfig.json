@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    // Typecheck against the source, so no build is needed first. The deploy
+    // itself resolves the package to dist/, as a consumer would.
+    "paths": { "@composure-labs/composurecdk-stream-dlq": ["../src/index.ts"] }
+  },
+  "include": ["."]
+}
