@@ -1,7 +1,9 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // The spike is its own package, tested with node:test (see spike/README.md).
+    exclude: [...configDefaults.exclude, "spike/**"],
     testTimeout: 20_000,
     env: {
       // aws-cdk-lib >= 2.262.0 validates every synth against a default ruleset
