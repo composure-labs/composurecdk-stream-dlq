@@ -11,8 +11,6 @@ Description: >
       --template-file .github/cloudformation/github-oidc-role.yml \
       --stack-name composure-labs-stream-dlq-github-oidc \
       --parameter-overrides \
-        GitHubOrg=composure-labs \
-        RepoName=composurecdk-stream-dlq \
         OIDCProviderArn=arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com \
       --capabilities CAPABILITY_NAMED_IAM
     aws cloudformation update-termination-protection \
@@ -23,15 +21,12 @@ Description: >
   as `AWS_REGION`, on the repository's `sandbox` environment.
 
 Parameters:
-  GitHubOrg:
+  SubjectPrefix:
     Type: String
-    Default: composure-labs
-    Description: GitHub organisation that owns the repository.
-
-  RepoName:
-    Type: String
-    Default: composurecdk-stream-dlq
-    Description: GitHub repository name.
+    Default: repo:composure-labs@347696672/composurecdk-stream-dlq@1432975031
+    Description: >
+      The repository's OIDC subject prefix, as printed by
+      gh api repos/<org>/<repo>/actions/oidc/customization/sub
 
   OIDCProviderArn:
     Type: String
@@ -74,8 +69,11 @@ Resources:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
                 # Only jobs running in the `sandbox` environment, which the
-                # repository can gate with reviewers or branch rules.
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrg}/${RepoName}:environment:sandbox
+                # repository can gate with reviewers or branch rules. The repo
+                # uses GitHub's immutable subject, which carries the owner and
+                # repository IDs, so a repository later created under the same
+                # name can't assume this role.
+                token.actions.githubusercontent.com:sub: !Sub ${SubjectPrefix}:environment:sandbox
 
   # Every stack this repo deploys is named `ComposureLabs-StreamDlq-*`. CDK
   # derives physical names from the stack name when none is given, so tables,
