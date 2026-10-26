@@ -9,6 +9,7 @@ export {
   type StreamDlqCaptureResult,
 } from "./capture-builder.js";
 export { type StreamDlqCaptureAlarmConfig } from "./capture-alarms.js";
+export { s3OnFailure } from "./s3-on-failure.js";
 export {
   DEFAULT_CAPTURE_ALARM_PERIOD,
   DEFAULT_CAPTURE_ALARMS,
