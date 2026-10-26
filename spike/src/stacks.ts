@@ -13,7 +13,11 @@ import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { compose, ref } from "@composurecdk/core";
 import { createTableV2Builder, type TableV2BuilderResult } from "@composurecdk/dynamodb";
 import { createKeyBuilder } from "@composurecdk/kms";
-import { createFunctionBuilder, dynamoEventSource } from "@composurecdk/lambda";
+import {
+  createFunctionBuilder,
+  dynamoEventSource,
+  type DynamoStreamEventSourceProps,
+} from "@composurecdk/lambda";
 import { type BucketBuilderResult, createBucketBuilder } from "@composurecdk/s3";
 import { createQueueBuilder } from "@composurecdk/sqs";
 import { PROCESSOR_HANDLER, REPLAY_HANDLER } from "./handlers.js";
@@ -115,6 +119,8 @@ export function captureStack(
     denyDelivery?: boolean;
     /** Open item F1: deny the processor's role `s3:PutObject` on the failure bucket. */
     denyDestinationWrite?: boolean;
+    /** Event source settings over the default of one PutItem → one failure object, in seconds. */
+    eventSource?: Omit<DynamoStreamEventSourceProps, "onFailure">;
   },
 ): Stack {
   const stack = newStack(app, name);
@@ -143,9 +149,9 @@ export function captureStack(
           dynamoEventSource(
             ref("table", (r: TableV2BuilderResult) => r.table),
             {
-              // One PutItem → one failure object, in seconds.
               retryAttempts: 0,
               bisectBatchOnError: false,
+              ...options.eventSource,
               onFailure: ref(
                 "failures",
                 (r: BucketBuilderResult) => new S3OnFailureDestination(r.bucket),

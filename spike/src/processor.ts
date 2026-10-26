@@ -4,7 +4,9 @@
  * UpdateFunctionConfiguration between steps.
  *
  * - `throw`: fail every batch (an invocation with `FunctionError` set).
- * - `partial`: report every record in `batchItemFailures`.
+ *   `throw:<suffix>` fails only a batch holding a record whose pk ends `<suffix>`.
+ * - `partial`: report every record in `batchItemFailures`. `partial:<suffix>`
+ *   reports only the records whose pk ends `<suffix>`.
  * - `sleep:<seconds>`: wait, then succeed.
  * - `succeed`: succeed.
  *
@@ -19,17 +21,18 @@ export async function processor(event: {
   const pks = records.map((r) => r.dynamodb?.Keys?.pk?.S ?? "");
   console.log(JSON.stringify({ marker: "SPIKE_INVOKE", mode, pks, event }));
 
-  if (mode === "throw") {
-    throw new Error("spike: MODE=throw");
+  const [kind, arg = ""] = mode.split(":");
+  const failing = records.filter((_, i) => (pks[i] ?? "").endsWith(arg));
+  if (kind === "throw" && failing.length > 0) {
+    throw new Error(`spike: MODE=${mode}`);
   }
-  if (mode === "partial") {
+  if (kind === "partial") {
     return {
-      batchItemFailures: records.map((r) => ({ itemIdentifier: r.dynamodb?.SequenceNumber ?? "" })),
+      batchItemFailures: failing.map((r) => ({ itemIdentifier: r.dynamodb?.SequenceNumber ?? "" })),
     };
   }
-  if (mode.startsWith("sleep:")) {
-    const seconds = Number(mode.slice("sleep:".length));
-    await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+  if (kind === "sleep") {
+    await new Promise((resolve) => setTimeout(resolve, Number(arg) * 1000));
   }
   return { batchItemFailures: [] };
 }

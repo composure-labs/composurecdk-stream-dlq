@@ -22,7 +22,7 @@ import {
   DescribeLogGroupsCommand,
   FilterLogEventsCommand,
 } from "@aws-sdk/client-cloudwatch-logs";
-import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { BatchWriteItemCommand, DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
 import {
   GetEventSourceMappingCommand,
   GetFunctionConfigurationCommand,
@@ -128,6 +128,12 @@ async function queueDepth(queueUrl: string) {
   };
 }
 
+/** The UUID of the function's (only) event source mapping. */
+async function mappingUuid(fn: string): Promise<string> {
+  const out = await lambda.send(new ListEventSourceMappingsCommand({ FunctionName: fn }));
+  return out.EventSourceMappings?.[0]?.UUID ?? "";
+}
+
 async function setMode(fn: string, mode: string): Promise<void> {
   await lambda.send(
     new UpdateFunctionConfigurationCommand({
@@ -147,32 +153,25 @@ async function setMode(fn: string, mode: string): Promise<void> {
   log(`MODE=${mode}`);
 }
 
+const item = (pk: string) => ({ pk: { S: pk }, at: { S: new Date().toISOString() } });
+
 async function putItem(table: string, pk: string): Promise<number> {
-  await ddb.send(
-    new PutItemCommand({
-      TableName: table,
-      Item: { pk: { S: pk }, at: { S: new Date().toISOString() } },
-    }),
-  );
+  await ddb.send(new PutItemCommand({ TableName: table, Item: item(pk) }));
   log(`PutItem pk=${pk}`);
   return Date.now();
 }
 
+/** Failure objects written after `since`, allowing 2s of clock skew. */
+async function objectsSince(bucket: string, since: number) {
+  const out = await s3.send(new ListObjectsV2Command({ Bucket: bucket }));
+  return (out.Contents ?? [])
+    .filter((o) => o.Key !== undefined && (o.LastModified?.getTime() ?? 0) >= since - 2000)
+    .map((o) => ({ key: o.Key ?? "", lastModified: o.LastModified?.getTime() ?? 0 }));
+}
+
 /** The first failure object written after `since`. */
 async function waitForObject(bucket: string, since: number, timeoutS = 180) {
-  return waitFor(
-    "failure object",
-    async () => {
-      const out = await s3.send(new ListObjectsV2Command({ Bucket: bucket }));
-      const object = (out.Contents ?? []).find(
-        (o) => (o.LastModified?.getTime() ?? 0) >= since - 2000,
-      );
-      return object?.Key === undefined
-        ? undefined
-        : { key: object.Key, lastModified: object.LastModified?.getTime() ?? 0 };
-    },
-    timeoutS,
-  );
+  return waitFor("failure object", async () => (await objectsSince(bucket, since))[0], timeoutS);
 }
 
 async function getObject(bucket: string, key: string): Promise<string> {
@@ -208,7 +207,7 @@ async function invocationsFor(group: string, pk: string, since: number) {
     const envelope = JSON.parse(e.message) as { message: string };
     return {
       timestamp: e.timestamp,
-      ...(JSON.parse(envelope.message) as { mode: string; event: unknown }),
+      ...(JSON.parse(envelope.message) as { mode: string; pks: string[]; event: unknown }),
     };
   });
 }
@@ -615,10 +614,7 @@ const scenarios: Record<string, () => Promise<void>> = {
     const object = await waitForObject(o.BucketName, putAt, 240);
     log(object ? `unexpected failure object ${object.key}` : "no failure object, as expected");
 
-    const mappings = await lambda.send(
-      new ListEventSourceMappingsCommand({ FunctionName: o.ProcessorName }),
-    );
-    const uuid = mappings.EventSourceMappings?.[0]?.UUID ?? "";
+    const uuid = await mappingUuid(o.ProcessorName);
     const processorAlarms = Object.entries(o)
       .filter(([key]) => key.startsWith("ProcessorAlarm"))
       .map(([, name]) => name);
@@ -721,6 +717,109 @@ const scenarios: Record<string, () => Promise<void>> = {
       secondsRestoreToMessage: message ? (message.sentAt - restoredAt) / 1000 : null,
       ruleMetrics: await metricSums("AWS/Events", { RuleName: o.RuleName }, RULE_METRICS, putAt),
       ruleFailedAlarmHistory: await alarmHistory(o.RuleFailedAlarm, putAt),
+    });
+  },
+
+  /**
+   * B: one poison record in a batch of 10, under composureCDK's stream
+   * defaults (bisect on, partial batch responses on) and `retryAttempts: 2`.
+   * How many failure objects land, which records each holds, how the batch
+   * was split, and how long capture took. Run once per processor behaviour:
+   * `throw` (the function errors) and `partial` (it reports the record).
+   */
+  async bisect() {
+    const behaviour = process.argv[3] ?? "throw";
+    if (behaviour !== "throw" && behaviour !== "partial") {
+      throw new Error(`bisect takes throw or partial, not ${behaviour}`);
+    }
+    const o = await outputs("Bisect");
+    await setMode(o.ProcessorName, `${behaviour}:-poison`);
+    const run = `bisect-${behaviour}-${String(Date.now())}`;
+    const pks = Array.from(
+      { length: 10 },
+      (_, i) => `${run}-${String(i)}${i === 4 ? "-poison" : ""}`,
+    );
+    await ddb.send(
+      new BatchWriteItemCommand({
+        RequestItems: {
+          [o.TableName]: pks.map((pk) => ({ PutRequest: { Item: item(pk) } })),
+        },
+      }),
+    );
+    const putAt = Date.now();
+    log(`BatchWriteItem ${run}`);
+
+    // Objects arrive as each split exhausts its retries: wait until none has
+    // landed for 3 minutes.
+    let objects: { key: string; lastModified: number }[] = [];
+    let lastChange = putAt;
+    await waitFor(
+      "failure objects to settle",
+      async () => {
+        const now = await objectsSince(o.BucketName, putAt);
+        if (now.length !== objects.length) {
+          objects = now;
+          lastChange = Date.now();
+          log(`${String(objects.length)} failure object(s)`);
+        }
+        return objects.length > 0 && Date.now() - lastChange >= 180_000 ? true : undefined;
+      },
+      20 * 60,
+      15,
+    );
+
+    const stored = await Promise.all(
+      objects.map(async (object) => {
+        const record = JSON.parse(await getObject(o.BucketName, object.key)) as {
+          payload?: unknown;
+          requestContext?: unknown;
+          responseContext?: unknown;
+          DDBStreamBatchInfo?: unknown;
+        };
+        const payload = (
+          typeof record.payload === "string" ? JSON.parse(record.payload) : record.payload
+        ) as { Records?: { dynamodb?: { Keys?: { pk?: { S?: string } } } }[] } | undefined;
+        return {
+          key: object.key,
+          secondsAfterWrite: (object.lastModified - putAt) / 1000,
+          pks: (payload?.Records ?? []).map((r) => r.dynamodb?.Keys?.pk?.S ?? ""),
+          requestContext: record.requestContext,
+          responseContext: record.responseContext,
+          batchInfo: record.DDBStreamBatchInfo,
+        };
+      }),
+    );
+
+    // Each invocation's records, in order: the splits the mapping made.
+    const invocations = (await invocationsFor(o.ProcessorLogGroup, run, putAt - 5000))
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .map((i) => ({ secondsAfterWrite: (i.timestamp - putAt) / 1000, pks: i.pks }));
+
+    const storedPks = stored.flatMap((s) => s.pks);
+    save(`bisect-${behaviour}`, {
+      objectCount: stored.length,
+      // Records that reached the bucket though they never failed.
+      goodRecordsStored: [...new Set(storedPks.filter((pk) => !pk.endsWith("-poison")))],
+      // How often each record was stored: above 1 means duplicate objects.
+      timesStored: Object.fromEntries(
+        pks.map((pk) => [pk, storedPks.filter((stored) => stored === pk).length]),
+      ),
+      // How often each record was invoked: above 1 for a good record means it
+      // was processed again after a split or a checkpoint.
+      timesInvoked: Object.fromEntries(
+        pks.map((pk) => [pk, invocations.filter((i) => i.pks.includes(pk)).length]),
+      ),
+      secondsToLastObject: stored.length
+        ? Math.max(...stored.map((s) => s.secondsAfterWrite))
+        : null,
+      invocations,
+      objects: stored,
+      esmMetrics: await metricSums(
+        "AWS/Lambda",
+        { EventSourceMappingUUID: await mappingUuid(o.ProcessorName) },
+        ["PolledEventCount", "FailedInvokeEventCount", "OnFailureDestinationDeliveredEventCount"],
+        putAt,
+      ),
     });
   },
 

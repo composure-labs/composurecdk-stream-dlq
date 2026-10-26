@@ -1,4 +1,5 @@
 import { App, Duration } from "aws-cdk-lib";
+import { StartingPosition } from "aws-cdk-lib/aws-lambda";
 import { Key } from "aws-cdk-lib/aws-kms";
 import {
   captureStack,
@@ -15,7 +16,7 @@ const notifyPrefix = app.node.tryGetContext("notifyPrefix") as string | undefine
 const floor = app.node.tryGetContext("floor") === "true";
 
 const followUp = app.node.tryGetContext("followUp") === "true";
-// The architecture doc's open items: F14, F1 and F5.
+// The architecture doc's open items: F14, F1 and F5, and B (batch bisection).
 const openItems = app.node.tryGetContext("openItems") === "true";
 
 if (openItems) {
@@ -29,6 +30,20 @@ if (openItems) {
   });
   // Default retry policy (185 attempts over 24 hours), for F5's recovery window.
   captureStack(app, "SignalRetry", { signal: "eventbridge", replay: false });
+  // B: composureCDK's stream defaults with bounded retries. The batching
+  // window makes one BatchWriteItem arrive as one batch, and TRIM_HORIZON
+  // keeps a run soon after deploy from missing its writes.
+  captureStack(app, "Bisect", {
+    signal: "eventbridge",
+    replay: false,
+    eventSource: {
+      startingPosition: StartingPosition.TRIM_HORIZON,
+      bisectBatchOnError: true,
+      retryAttempts: 2,
+      batchSize: 10,
+      maxBatchingWindow: Duration.seconds(10),
+    },
+  });
 } else if (followUp) {
   // Follow-up 1: EventBridge without BucketNotificationsHandler, alone and beside a consumer notification.
   captureStack(app, "NoHandler", { signal: "eventbridge-native", replay: false });
