@@ -1,8 +1,8 @@
 import { Annotations, Duration, Stack, Token } from "aws-cdk-lib";
 import type { Alarm } from "aws-cdk-lib/aws-cloudwatch";
 import type { CfnBucket } from "aws-cdk-lib/aws-s3";
-import type { IConstruct } from "constructs";
-import { compose, type Lifecycle, type Ref, ref } from "@composurecdk/core";
+import { Construct, type IConstruct } from "constructs";
+import { at, compose, type Lifecycle, type Ref, ref } from "@composurecdk/core";
 import { type ITaggedBuilder, taggedBuilder } from "@composurecdk/cloudformation";
 import {
   type IRuleBuilder,
@@ -85,8 +85,13 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
     // The signal path is set after the callbacks, so none of it can be removed:
     // the bucket publishes its events to EventBridge, and the rule routes this
     // bucket's Object Created events to the queue.
+    //
+    // Everything capture creates is built under one construct named `id`, each
+    // component under its key. Until compose() treats an empty id as no prefix
+    // (laazyj/composureCDK#644), the keys are pinned with at(); dropping
+    // pinnedToKeys then leaves every path, and so every logical id, unchanged.
     return compose(
-      {
+      pinnedToKeys({
         bucket: configured(failureBucketDefaults(), this.props.bucket).eventBridgeEnabled(true),
         queue: configured(signalQueueDefaults(), this.props.queue),
         rule: resolvingEventPattern(
@@ -104,12 +109,19 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
           queue: ref<QueueBuilderResult>("queue").get("queue"),
           rule: ref<RuleBuilderResult>("rule").get("rule"),
         }),
-      },
+      }),
       { bucket: [], queue: [], rule: ["bucket", "queue"], alarms: ["queue", "rule"] },
     )
       .afterBuild(checkLifetimes)
-      .build(scope, id, context);
+      .build(new Construct(scope, id), "", context);
   }
+}
+
+/** Pins each component's construct id to its key, so compose() adds no prefix. */
+function pinnedToKeys<C extends Record<string, Lifecycle>>(components: C): C {
+  return Object.fromEntries(
+    Object.entries(components).map(([key, component]) => [key, at(key, component)]),
+  ) as C;
 }
 
 /**
