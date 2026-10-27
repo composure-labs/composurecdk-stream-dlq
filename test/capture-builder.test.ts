@@ -1,5 +1,8 @@
-import { App, CfnParameter, CfnResource, Duration, Stack } from "aws-cdk-lib";
+import { App, CfnParameter, CfnResource, Duration, Stack, type StackProps } from "aws-cdk-lib";
+import type { CfnRule } from "aws-cdk-lib/aws-events";
 import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
+import { Key } from "aws-cdk-lib/aws-kms";
+import { QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { describe, expect, it } from "vitest";
 import { compose } from "@composurecdk/core";
 import { assertCopyPreservesState } from "@composurecdk/core/testing";
@@ -11,11 +14,14 @@ import {
   type StreamDlqCaptureResult,
 } from "../src/index.js";
 
-function synth(builder: IStreamDlqCaptureBuilder = createStreamDlqCaptureBuilder()): {
+function synth(
+  builder: IStreamDlqCaptureBuilder = createStreamDlqCaptureBuilder(),
+  props?: StackProps,
+): {
   result: StreamDlqCaptureResult;
   template: Template;
 } {
-  const stack = new Stack(new App(), "Test");
+  const stack = new Stack(new App(), "Test", props);
   const result = builder.build(stack, "Failures");
   return { result, template: Template.fromStack(stack) };
 }
@@ -109,7 +115,7 @@ describe("createStreamDlqCaptureBuilder", () => {
         PolicyDocument: {
           Statement: Match.arrayWith([
             Match.objectLike({
-              Action: Match.arrayWith(["sqs:SendMessage"]),
+              Action: "sqs:SendMessage",
               Principal: { Service: "events.amazonaws.com" },
               Condition: {
                 ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": ["FailuresruleC90CB086", "Arn"] } },
@@ -118,6 +124,10 @@ describe("createStreamDlqCaptureBuilder", () => {
           ]),
         },
       });
+    });
+
+    it("leaves the rule unnamed", () => {
+      template.hasResourceProperties("AWS::Events::Rule", { Name: Match.absent() });
     });
 
     it("alarms on any rule invocation that fails", () => {
@@ -279,6 +289,89 @@ describe("createStreamDlqCaptureBuilder", () => {
           alarms: Object.keys(r.alarms),
         }),
       });
+    });
+  });
+
+  describe("with a customer-managed queue key", () => {
+    const env = { account: "123456789012", region: "eu-west-2" };
+    const keyed = () =>
+      createStreamDlqCaptureBuilder().queue((q) => q.encryption(QueueEncryption.KMS));
+    const { result, template } = synth(keyed(), { env });
+    const ruleName = (result.rule.rule.node.defaultChild as CfnRule).name ?? "";
+
+    it("names the rule after its path", () => {
+      expect(ruleName).toMatch(/^Test-Failures-[A-Z0-9]+-rule$/);
+    });
+
+    it("grants EventBridge the key for this rule only", () => {
+      const [key] = Object.values(template.findResources("AWS::KMS::Key")) as {
+        Properties: { KeyPolicy: { Statement: { Principal?: { Service?: string } }[] } };
+      }[];
+      const statements = key.Properties.KeyPolicy.Statement;
+      expect(statements.filter((s) => s.Principal?.Service === "events.amazonaws.com")).toEqual([
+        {
+          Effect: "Allow",
+          Principal: { Service: "events.amazonaws.com" },
+          Action: ["kms:GenerateDataKey", "kms:Decrypt"],
+          Resource: "*",
+          Condition: {
+            ArnEquals: {
+              "aws:SourceArn": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    { Ref: "AWS::Partition" },
+                    `:events:eu-west-2:123456789012:rule/${ruleName}`,
+                  ],
+                ],
+              },
+            },
+            StringEquals: { "aws:SourceAccount": "123456789012" },
+          },
+        },
+      ]);
+    });
+
+    it("keeps the queue policy scoped to the rule", () => {
+      template.hasResourceProperties("AWS::SQS::QueuePolicy", {
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: "sqs:SendMessage",
+              Condition: { ArnEquals: { "aws:SourceArn": Match.anyValue() } },
+            }),
+          ]),
+        },
+      });
+    });
+
+    it("keeps a rule name the consumer sets", () => {
+      const named = build(keyed().rule((r) => r.ruleName("orders-failures")));
+      expect((named.rule.rule.node.defaultChild as CfnRule).name).toBe("orders-failures");
+    });
+
+    it("rejects a rule name it can't put in the key's policy", () => {
+      const stack = new Stack(new App(), "Test");
+      const name = new CfnParameter(stack, "RuleName").valueAsString;
+      expect(() =>
+        keyed()
+          .rule((r) => r.ruleName(name))
+          .build(stack, "Failures"),
+      ).toThrow(/name is a token/);
+    });
+
+    it("warns with the statement to add when the key is imported", () => {
+      const stack = new Stack(new App(), "Test", { env });
+      const imported = Key.fromKeyArn(
+        stack,
+        "Imported",
+        "arn:aws:kms:eu-west-2:123456789012:key/abc",
+      );
+      createStreamDlqCaptureBuilder()
+        .queue((q) => q.encryption(QueueEncryption.KMS).encryptionMasterKey(imported))
+        .build(stack, "Failures");
+      Annotations.fromStack(stack).hasWarning("*", Match.stringLikeRegexp("the key is imported"));
     });
   });
 
