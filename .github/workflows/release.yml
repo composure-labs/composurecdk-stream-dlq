@@ -6,10 +6,10 @@ name: Release
 # publisher is configured for this file name and the `npm` environment —
 # renaming either breaks publishing.
 #
-# Releases are staged: this workflow submits the version for review and drafts
-# the GitHub Release. Nothing is public until a maintainer approves it with 2FA
-# (`npm stage approve <stage-id>`, or Staged Packages on npmjs.com), then
-# publishes the draft, which creates the tag. See CONTRIBUTING.md#releasing.
+# Running it is the release: it publishes to npm, then publishes the GitHub
+# Release, which creates the tag. The gate is who can run it: the `npm`
+# environment deploys only from protected branches, and the trusted publisher
+# on npmjs.com must allow `npm publish`. See CONTRIBUTING.md#releasing.
 
 on:
   workflow_dispatch:
@@ -28,12 +28,12 @@ concurrency:
 
 jobs:
   publish:
-    name: Stage on npm
+    name: Publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm
     permissions:
-      contents: write # Draft the GitHub Release
+      contents: write # Create the GitHub Release
       id-token: write # npm trusted publishing (OIDC) and provenance
     steps:
       - name: Checkout
@@ -49,48 +49,47 @@ jobs:
           package-manager-cache: false
 
       # `npm version` rejects non-semver itself, but accepts a leading `v`,
-      # which would then produce a `vv…` tag. A draft counts as released, so a
-      # version can't be staged twice.
+      # which would then produce a `vv…` tag. npm is checked before verify, so
+      # a version already published fails fast.
       - name: Validate version
         env:
           VERSION: ${{ inputs.version }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::'$VERSION' is not a semver version (no leading v)."
             exit 1
           fi
-          if gh release view "v$VERSION" >/dev/null 2>&1; then
-            echo "::error::v$VERSION is already released."
+          if [[ -n "$(npm view "@composure-labs/composurecdk-stream-dlq@$VERSION" version 2>/dev/null)" ]]; then
+            echo "::error::$VERSION is already on npm."
             exit 1
           fi
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify
-        run: npm run verify
-
+      # Before verify, so the package verify checks has the published version.
       - name: Set version
         env:
           VERSION: ${{ inputs.version }}
         run: npm version "$VERSION" --no-git-tag-version
 
-      # Staged publishing needs npm >= 11.15.0. The trusted publisher allows
-      # only `npm stage publish`, so even a compromised run can't publish.
-      - name: Stage on npm
-        run: npx -y npm@^11.15.0 stage publish
+      - name: Verify
+        run: npm run verify
 
-      # A draft creates no tag; publishing it after npm approval does.
-      - name: Draft GitHub Release
+      # Trusted publishing (OIDC) needs npm >= 11.5.1, newer than some Node
+      # 24 releases bundle. Provenance is added automatically. npm refuses a
+      # prerelease without a tag, so one goes to `next`, not `latest`.
+      - name: Publish to npm
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          tag=latest
+          if [[ "$VERSION" == *-* ]]; then tag=next; fi
+          npx -y npm@^11.5.1 publish --tag "$tag"
+
+      # After npm, so a failed publish leaves no tag behind.
+      - name: Publish GitHub Release
         env:
           VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "v$VERSION" --draft --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
-          {
-            echo "### v$VERSION is staged, not published"
-            echo
-            echo "1. \`npm stage list @composure-labs/composurecdk-stream-dlq\`, then \`npm stage approve <stage-id>\` (2FA)."
-            echo "2. Publish the draft release v$VERSION, which creates the tag."
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
