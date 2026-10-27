@@ -107,8 +107,11 @@ Capture sets the signal path after your callbacks, so they can't remove it: Even
 
 - **Configure alarm actions.** Capture creates alarms but no actions. Without them a failure alarms to nobody. Use composureCDK's `alarmActionsPolicy`, or the alarms in the result.
 - **Start at `TRIM_HORIZON`, and bound retries.** With `LATEST`, composureCDK's current default, records written before a new mapping's first poll are never read, so they can never fail and be captured ([laazyj/composureCDK#635](https://github.com/laazyj/composureCDK/issues/635)). Set `retryAttempts` and `maxRecordAge` so a poison batch reaches capture with time to spare.
+- **Make the processor idempotent.** With composureCDK's defaults (bisection and partial batch responses on), a failure object holds just the failing record, but the records that shared its batch run again ([Retries and bisection](docs/architecture.md#retries-and-bisection)).
 - **When the age alarm fires,** the signal is close to expiring. Once SQS deletes it, the alarms clear, but the object stays in the bucket until its lifecycle expiry. List the bucket to find failures older than the queue's retention.
-- **When the rule's `FailedInvocations` alarm fires,** a failure was stored but not signalled. List the bucket by `LastModified` across the alarm's window to find it.
+- **When the rule's `FailedInvocations` alarm fires,** a failure was stored but not signalled. EventBridge doesn't retry a permission error, so fixing the policy brings nothing back. List the bucket by `LastModified` across the alarm's window to find it.
+- **When the processor's dropped-events alarm fires,** a failed batch could not be written to the bucket and is lost from capture; it exists only on the stream until its retention ends ([F1](docs/architecture.md#failure-modes-and-effects)).
+- **Both alarms clear within minutes,** while what they report is still unrecovered. Route them to something that keeps a record, such as a ticket or a page, rather than a dashboard.
 - **Before deleting the stack,** deal with outstanding failures. The bucket is retained, but the queue, the rule and the alarms go with the stack.
 
 **Idle cost** is about $0.30 a month, almost all of it the three alarms. The queue, the rule and the handler cost nothing at rest.
