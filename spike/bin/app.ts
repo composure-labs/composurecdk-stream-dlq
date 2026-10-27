@@ -23,11 +23,9 @@ if (openItems) {
   cmkEventBridgeStack(app, "CmkCdk", "cdk");
   cmkEventBridgeStack(app, "CmkScoped", "scoped");
   cmkEventBridgeStack(app, "CmkNoPolicy", "none");
-  captureStack(app, "DestinationDenied", {
-    signal: "eventbridge",
-    replay: false,
-    denyDestinationWrite: true,
-  });
+  // F1 denies the destination write at run time: Lambda checks the role can
+  // PutObject when it creates the mapping, so a deny in the template fails the deploy.
+  captureStack(app, "DestinationDenied", { signal: "eventbridge", replay: false });
   // Default retry policy (185 attempts over 24 hours), for F5's recovery window.
   captureStack(app, "SignalRetry", { signal: "eventbridge", replay: false });
   // B: composureCDK's stream defaults with bounded retries. The batching

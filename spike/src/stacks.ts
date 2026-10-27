@@ -2,7 +2,7 @@ import { App, CfnOutput, Duration, RemovalPolicy, Stack, Tags } from "aws-cdk-li
 import { AttributeType, StreamViewType } from "aws-cdk-lib/aws-dynamodb";
 import { Alarm, ComparisonOperator, Metric, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
 import { Rule } from "aws-cdk-lib/aws-events";
-import { ArnPrincipal, Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
+import { Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { SqsQueue, type SqsQueueProps } from "aws-cdk-lib/aws-events-targets";
 import { Key } from "aws-cdk-lib/aws-kms";
 import { Code, Runtime } from "aws-cdk-lib/aws-lambda";
@@ -117,8 +117,6 @@ export function captureStack(
     consumerNotification?: boolean;
     /** Deny EventBridge on the queue, with no retries, to see what a lost signal leaves behind. */
     denyDelivery?: boolean;
-    /** Open item F1: deny the processor's role `s3:PutObject` on the failure bucket. */
-    denyDestinationWrite?: boolean;
     /** Event source settings over the default of one PutItem → one failure object, in seconds. */
     eventSource?: Omit<DynamoStreamEventSourceProps, "onFailure">;
   },
@@ -210,20 +208,11 @@ export function captureStack(
   }
 
   const fn = results.processor.function;
-  if (options.denyDestinationWrite && fn.role) {
-    // An explicit deny beats the grant S3OnFailureDestination adds to the role.
-    failureBucketConstruct.addToResourcePolicy(
-      new PolicyStatement({
-        effect: Effect.DENY,
-        principals: [new ArnPrincipal(fn.role.roleArn)],
-        actions: ["s3:PutObject"],
-        resources: [failureBucketConstruct.arnForObjects("*")],
-      }),
-    );
-  }
   outputs(stack, {
     TableName: results.table.table.tableName,
     ProcessorName: fn.functionName,
+    // F1 denies this role on the bucket at run time.
+    ProcessorRoleArn: fn.role?.roleArn ?? "",
     ProcessorLogGroup: results.processor.logGroup?.logGroupName ?? `/aws/lambda/${fn.functionName}`,
     BucketName: failureBucketConstruct.bucketName,
     QueueUrl: queue.queueUrl,

@@ -34,10 +34,12 @@ import {
 import {
   DeleteBucketCommand,
   DeleteObjectsCommand,
+  GetBucketPolicyCommand,
   GetObjectCommand,
   ListBucketsCommand,
   ListObjectsV2Command,
   ListObjectVersionsCommand,
+  PutBucketPolicyCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -602,33 +604,62 @@ const scenarios: Record<string, () => Promise<void>> = {
   },
 
   /**
-   * F1: the mapping can't write its failure object (the bucket policy denies
-   * the processor's role). Does anything raise it: the mapping's
-   * DroppedEventCount, composureCDK's processor alarms, the mapping's state?
+   * F1: the mapping can't write its failure object, because the bucket policy
+   * denies the processor's role after the mapping was created (a deny present
+   * at deploy fails the mapping's creation). Does anything raise it: the
+   * mapping's DroppedEventCount, composureCDK's processor alarms, the
+   * mapping's state? Is the write retried once the deny is lifted? The policy
+   * is restored even if the run fails.
    */
   async f1() {
     const o = await outputs("DestinationDenied");
+    const original = await s3.send(new GetBucketPolicyCommand({ Bucket: o.BucketName }));
+    const policy = original.Policy ?? "";
+    const denied = JSON.parse(policy) as { Statement: unknown[] };
+    denied.Statement.push({
+      Sid: "SpikeF1Deny",
+      Effect: "Deny",
+      Principal: { AWS: o.ProcessorRoleArn },
+      Action: "s3:PutObject",
+      Resource: `arn:aws:s3:::${o.BucketName}/*`,
+    });
+    const setPolicy = (value: string) =>
+      s3.send(new PutBucketPolicyCommand({ Bucket: o.BucketName, Policy: value }));
+
     await setMode(o.ProcessorName, "throw");
     const pk = `f1-${String(Date.now())}`;
-    const putAt = await putItem(o.TableName, pk);
-    const object = await waitForObject(o.BucketName, putAt, 240);
-    log(object ? `unexpected failure object ${object.key}` : "no failure object, as expected");
-
+    let putAt = 0;
+    let object: Awaited<ReturnType<typeof waitForObject>> = undefined;
+    const samples: unknown[] = [];
     const uuid = await mappingUuid(o.ProcessorName);
     const processorAlarms = Object.entries(o)
       .filter(([key]) => key.startsWith("ProcessorAlarm"))
       .map(([, name]) => name);
-    // ESM metrics publish late: sample for 10 minutes.
-    const samples: unknown[] = [];
-    const sampleFrom = Date.now();
-    for (let minute = 1; minute <= 10; minute++) {
-      await sleep(minute * 60_000 - (Date.now() - sampleFrom));
-      samples.push({ minute, alarms: await alarmStates(processorAlarms) });
-      log(JSON.stringify(samples.at(-1)));
+    try {
+      await setPolicy(JSON.stringify(denied));
+      log("bucket policy denies the processor's PutObject; waiting 60s for it to propagate");
+      await sleep(60_000);
+      putAt = await putItem(o.TableName, pk);
+      object = await waitForObject(o.BucketName, putAt, 240);
+      log(object ? `unexpected failure object ${object.key}` : "no failure object, as expected");
+      // ESM metrics publish late: sample for 10 minutes, with the deny still in place.
+      const sampleFrom = Date.now();
+      for (let minute = 1; minute <= 10; minute++) {
+        await sleep(minute * 60_000 - (Date.now() - sampleFrom));
+        samples.push({ minute, alarms: await alarmStates(processorAlarms) });
+        log(JSON.stringify(samples.at(-1)));
+      }
+    } finally {
+      await setPolicy(policy);
+      log("bucket policy restored");
     }
+    // Is the write retried once the deny is lifted?
+    const late = object ? undefined : await waitForObject(o.BucketName, putAt, 180);
     const mapping = await lambda.send(new GetEventSourceMappingCommand({ UUID: uuid }));
     save("f1", {
       failureObjectWritten: object !== undefined,
+      // Written within 3 minutes of the deny being lifted: the write was retried.
+      failureObjectWrittenAfterRestore: late !== undefined,
       invocations: (await invocationsFor(o.ProcessorLogGroup, pk, putAt - 5000)).length,
       mapping: {
         state: mapping.State,
