@@ -9,6 +9,9 @@ import type { Queue } from "aws-cdk-lib/aws-sqs";
  * keyed queue's key to every rule (architecture F14). `ruleName` is the rule's
  * literal name, required with a key: its policy can't reference the rule
  * without a dependency cycle.
+ *
+ * Interim: once laazyj/composureCDK#648 scopes `sqsTarget` the same way, this
+ * becomes `sqsTarget(queue)`.
  */
 export function signalTarget(queue: Queue, ruleName?: string): IRuleTarget {
   return {
