@@ -128,7 +128,7 @@ export function captureAlarms(
  * `<stack>/<path to the capture>/<key>`. composureCDK's default names an alarm
  * `<stack>/<id>/<key>`, ignoring the constructs between the stack and its
  * scope, so every capture's "alarms" component would share one name per key.
- * Interim, until that default includes the path.
+ * Interim, until laazyj/composureCDK#649 makes that default include the path.
  */
 function captureAlarmName(capture: IConstruct, key: string): AlarmName {
   const { scopes } = capture.node;
