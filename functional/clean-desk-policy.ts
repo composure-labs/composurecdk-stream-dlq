@@ -5,6 +5,7 @@ import {
   Aspects,
   CfnDeletionPolicy,
   CfnResource,
+  Duration,
   type IAspect,
   type IPropertyInjector,
   PropertyInjectors,
@@ -12,6 +13,7 @@ import {
   Stack,
 } from "aws-cdk-lib";
 import { TableV2, type TablePropsV2 } from "aws-cdk-lib/aws-dynamodb";
+import { Key, type KeyProps } from "aws-cdk-lib/aws-kms";
 import { CfnFunction } from "aws-cdk-lib/aws-lambda";
 import { LogGroup, type LogGroupProps, RetentionDays } from "aws-cdk-lib/aws-logs";
 import { Bucket, type BucketProps, CfnBucket } from "aws-cdk-lib/aws-s3";
@@ -50,6 +52,25 @@ class TableV2RemovalPolicyInjector implements IPropertyInjector {
 
   inject(originalProps: TablePropsV2): TablePropsV2 {
     return { ...originalProps, removalPolicy: RemovalPolicy.DESTROY, deletionProtection: false };
+  }
+}
+
+/**
+ * Destroys KMS keys with the stack, after the shortest waiting period KMS
+ * allows (7 days). A key is billed hourly until it is scheduled for deletion,
+ * and not while it waits, so a test's key costs only the hours its stack
+ * exists. `@composurecdk/kms` defaults to RETAIN, which would leave a key
+ * billing every month after each run.
+ */
+class KeyRemovalPolicyInjector implements IPropertyInjector {
+  readonly constructUniqueId = Key.PROPERTY_INJECTION_ID;
+
+  inject(originalProps: KeyProps): KeyProps {
+    return {
+      ...originalProps,
+      removalPolicy: RemovalPolicy.DESTROY,
+      pendingWindow: Duration.days(7),
+    };
   }
 }
 
@@ -152,6 +173,7 @@ export function cleanDeskPolicy(scope: IConstruct): void {
   injectors.add(new BucketRemovalPolicyInjector());
   injectors.add(new LogGroupRemovalPolicyInjector());
   injectors.add(new TableV2RemovalPolicyInjector());
+  injectors.add(new KeyRemovalPolicyInjector());
 
   Aspects.of(scope).add(new DisableSourceLoggingOnDeleteAspect());
   Aspects.of(scope).add(new FunctionLogGroupAspect());
