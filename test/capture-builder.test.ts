@@ -3,6 +3,7 @@ import type { CfnRule } from "aws-cdk-lib/aws-events";
 import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
 import { Key } from "aws-cdk-lib/aws-kms";
 import { QueueEncryption } from "aws-cdk-lib/aws-sqs";
+import { Construct } from "constructs";
 import { describe, expect, it } from "vitest";
 import { compose } from "@composurecdk/core";
 import { assertCopyPreservesState } from "@composurecdk/core/testing";
@@ -421,6 +422,27 @@ describe("createStreamDlqCaptureBuilder", () => {
         ),
       ).not.toThrow();
     });
+  });
+
+  it("names its alarms after the capture, so two in one stack don't collide", () => {
+    const stack = new Stack(new App(), "Test");
+    for (const id of ["Orders", "Payments"]) createStreamDlqCaptureBuilder().build(stack, id);
+    // The same id under another construct mustn't collide either.
+    createStreamDlqCaptureBuilder().build(new Construct(stack, "Refunds"), "Orders");
+    const names = Object.values(Template.fromStack(stack).findResources("AWS::CloudWatch::Alarm"))
+      .map((alarm) => (alarm as { Properties: { AlarmName: string } }).Properties.AlarmName)
+      .sort();
+    expect(names).toEqual([
+      "test/orders/failures-ageing",
+      "test/orders/failures-waiting",
+      "test/orders/signal-undelivered",
+      "test/payments/failures-ageing",
+      "test/payments/failures-waiting",
+      "test/payments/signal-undelivered",
+      "test/refunds/orders/failures-ageing",
+      "test/refunds/orders/failures-waiting",
+      "test/refunds/orders/signal-undelivered",
+    ]);
   });
 
   it("nests in a composed system", () => {
