@@ -9,7 +9,7 @@
 **No-loss failure capture for Lambda stream consumers, built on [composureCDK](https://github.com/laazyj/composureCDK).**
 
 > [!WARNING]
-> **Pre-release.** Capture, the `s3OnFailure` destination and customer-managed keys are implemented; the replay function is still to come. The design is in [docs/architecture.md](docs/architecture.md), and the plan in [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623).
+> **Pre-1.0.** Until 1.0, a minor release (0.1 → 0.2) may change the API; a patch release won't. Capture, the `s3OnFailure` destination and customer-managed keys are implemented; the replay function is still to come. The design is in [docs/architecture.md](docs/architecture.md), and the plan in [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623).
 
 A Lambda consuming DynamoDB Streams (and, later, Kinesis) eventually exhausts its retries on some batch. The records only live for the stream's retention window, so the failed batch has to be captured somewhere durable before that window closes, and the on-call has to hear about it with hours to spare. This package provides:
 
