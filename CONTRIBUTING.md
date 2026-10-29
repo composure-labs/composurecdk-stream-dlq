@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest. This package is **pre-release (0.x)** and its API is not settled yet, so we work **issue-first**: open an issue before a large pull request, and we'll agree on fit and approach before anyone writes code. Small, obvious fixes (typos, broken links, one-line bugs) are welcome as direct pull requests. Security issues go through [SECURITY.md](SECURITY.md), never a public issue.
+Thanks for your interest. This package is **pre-1.0** and its API is not settled yet, so we work **issue-first**: open an issue before a large pull request, and we'll agree on fit and approach before anyone writes code. Small, obvious fixes (typos, broken links, one-line bugs) are welcome as direct pull requests. Security issues go through [SECURITY.md](SECURITY.md), never a public issue.
 
 The package is built only on composureCDK's _published_ API. Its [architecture guide](https://github.com/laazyj/composureCDK/blob/main/docs/architecture.md) explains the shape of builders, `compose`, refs and grants. The design and the plan for this package live in [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623).
 
@@ -46,7 +46,7 @@ Workflows that deploy assume `github-actions-composure-labs-stream-dlq` through 
 
 ## Releasing
 
-Maintainers run the **Release** workflow by hand with the version to publish. It sets the version, runs `verify`, and publishes to npm through trusted publishing (OIDC), with provenance. It then publishes the GitHub Release, which creates the `v<version>` tag. The version lives in the tag and on npm; `package.json` on `main` stays at `0.0.0`. A prerelease, such as `0.2.0-rc.1`, is published under the `next` dist-tag.
+Maintainers run the **Release** workflow by hand with the version to publish. It sets the version, runs `verify`, and publishes to npm through trusted publishing (OIDC), with provenance. It then publishes the GitHub Release, which creates the `v<version>` tag. The version lives in the tag and on npm; `package.json` on `main` stays at `0.0.0`. Until 1.0, releases are plain `0.x` versions on `latest`, and a minor release may break the API. A prerelease version, such as `1.0.0-rc.1`, would go under the `next` dist-tag instead.
 
 Nothing approves a run after it starts, so the gate is who can run it: the `npm` environment deploys only from protected branches, and the package's trusted publisher on npmjs.com (GitHub, this repository, `release.yml`, environment `npm`) must allow `npm publish`.
 
