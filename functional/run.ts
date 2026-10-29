@@ -67,14 +67,46 @@ function waitForAlarm(state: "ALARM" | "OK", timeoutMs: number): Promise<true> {
   });
 }
 
+/** The first object in `bucket` written at or after `since`. */
+function waitForFailureObject(label: string, bucket: string, since: number): Promise<string> {
+  return waitFor(`failed batch written to the ${label}failure bucket`, 10 * MINUTE, async () => {
+    const { Contents } = await s3.send(new ListObjectsV2Command({ Bucket: bucket }));
+    return Contents?.find((object) => (object.LastModified?.getTime() ?? 0) >= since)?.Key;
+  });
+}
+
+// The signal is the bucket's Object Created event, so it names the object.
+// Deleting it is what an operator does once the failure is dealt with.
+function receiveAndDeleteSignal(label: string, queueUrl: string, key: string): Promise<true> {
+  return waitFor(`${label}signal for that object received and deleted`, 5 * MINUTE, async () => {
+    const { Messages } = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queueUrl,
+        MaxNumberOfMessages: 10,
+        WaitTimeSeconds: 10,
+      }),
+    );
+    const signal = Messages?.find((message) => message.Body?.includes(JSON.stringify(key)));
+    if (!signal) return undefined;
+    await sqs.send(
+      new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: signal.ReceiptHandle }),
+    );
+    return true;
+  });
+}
+
 // A new mapping takes minutes to start reading. TRIM_HORIZON means a record
 // written before then is still read, but waiting keeps the timings honest.
-await waitFor("event source mapping enabled", 10 * MINUTE, async () => {
-  const { EventSourceMappings } = await lambda.send(
-    new ListEventSourceMappingsCommand({ FunctionName: outputs.FunctionName }),
-  );
-  return EventSourceMappings?.[0]?.State === "Enabled";
-});
+await Promise.all(
+  [outputs.FunctionName, outputs.KeyedFunctionName].map((functionName) =>
+    waitFor(`event source mapping for ${functionName} enabled`, 10 * MINUTE, async () => {
+      const { EventSourceMappings } = await lambda.send(
+        new ListEventSourceMappingsCommand({ FunctionName: functionName }),
+      );
+      return EventSourceMappings?.[0]?.State === "Enabled";
+    }),
+  ),
+);
 
 const pk = `deploy-test-${new Date().toISOString()}`;
 await new DynamoDBClient().send(
@@ -85,33 +117,21 @@ await new DynamoDBClient().send(
 const written = Date.now() - 2_000;
 console.log(`✓ wrote ${pk}`);
 
-const key = await waitFor("failed batch written to the failure bucket", 10 * MINUTE, async () => {
-  const { Contents } = await s3.send(new ListObjectsV2Command({ Bucket: outputs.BucketName }));
-  return Contents?.find((object) => (object.LastModified?.getTime() ?? 0) >= written)?.Key;
-});
-console.log(`  ${key}`);
+// The keyed capture runs alongside the main flow, so a failure there surfaces
+// without waiting the main flow out.
+const keyed = waitForFailureObject("keyed ", outputs.KeyedBucketName, written).then((key) =>
+  receiveAndDeleteSignal("keyed ", outputs.KeyedQueueUrl, key),
+);
 
-await waitForAlarm("ALARM", 10 * MINUTE);
+async function main(): Promise<void> {
+  const key = await waitForFailureObject("", outputs.BucketName, written);
+  console.log(`  ${key}`);
+  await waitForAlarm("ALARM", 10 * MINUTE);
+  // Deleting the signal lets the alarm clear.
+  await receiveAndDeleteSignal("", outputs.QueueUrl, key);
+  await waitForAlarm("OK", 15 * MINUTE);
+}
 
-// The signal is the bucket's Object Created event, so it names the object.
-// Deleting it is what an operator does once the failure is dealt with, and
-// lets the alarm clear.
-await waitFor("signal for that object received and deleted", 5 * MINUTE, async () => {
-  const { Messages } = await sqs.send(
-    new ReceiveMessageCommand({
-      QueueUrl: outputs.QueueUrl,
-      MaxNumberOfMessages: 10,
-      WaitTimeSeconds: 10,
-    }),
-  );
-  const signal = Messages?.find((message) => message.Body?.includes(JSON.stringify(key)));
-  if (!signal) return undefined;
-  await sqs.send(
-    new DeleteMessageCommand({ QueueUrl: outputs.QueueUrl, ReceiptHandle: signal.ReceiptHandle }),
-  );
-  return true;
-});
-
-await waitForAlarm("OK", 15 * MINUTE);
+await Promise.all([main(), keyed]);
 
 console.log("Deploy test passed.");

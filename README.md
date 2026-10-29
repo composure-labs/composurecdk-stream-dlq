@@ -9,7 +9,7 @@
 **No-loss failure capture for Lambda stream consumers, built on [composureCDK](https://github.com/laazyj/composureCDK).**
 
 > [!WARNING]
-> **Pre-release.** Capture and the `s3OnFailure` destination are implemented; customer-managed keys and the replay function are still to come. The design is in [docs/architecture.md](docs/architecture.md), and the plan in [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623).
+> **Pre-release.** Capture, the `s3OnFailure` destination and customer-managed keys are implemented; the replay function is still to come. The design is in [docs/architecture.md](docs/architecture.md), and the plan in [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623).
 
 A Lambda consuming DynamoDB Streams (and, later, Kinesis) eventually exhausts its retries on some batch. The records only live for the stream's retention window, so the failed batch has to be captured somewhere durable before that window closes, and the on-call has to hear about it with hours to spare. This package provides:
 
@@ -102,6 +102,20 @@ createStreamDlqCaptureBuilder()
 ```
 
 Capture sets the signal path after your callbacks, so they can't remove it: EventBridge on the bucket, and the rule's event pattern and queue target. `build()` throws if any lifecycle rule expires objects before the queue's retention ends, since a failure would be deleted while its signal is still waiting. The age alarm's threshold follows the queue's retention. The queue's and rule's own `recommendedAlarms` are off because capture's replace them; turning them back on duplicates capture's alarms. Add any other alarm with `addAlarm` in the callback.
+
+### Customer-managed keys
+
+The bucket and the queue use SSE by default. Either can take a customer-managed KMS key through its callback:
+
+```ts
+createStreamDlqCaptureBuilder()
+  .bucket((b) => b.encryption(BucketEncryption.KMS).encryptionKey(bucketKey))
+  .queue((q) => q.encryption(QueueEncryption.KMS).encryptionMasterKey(queueKey));
+```
+
+- **Bucket key:** `s3OnFailure` grants the processor `kms:GenerateDataKey` on it. Nothing else needs it to deliver a failure.
+- **Queue key:** EventBridge encrypts each signal with it, so capture adds a statement to the key's policy allowing `events.amazonaws.com` `kms:GenerateDataKey` and `kms:Decrypt`, only for the signal rule (`aws:SourceArn`) in this account (`aws:SourceAccount`). To name the rule's ARN without a dependency cycle, capture gives the rule a name derived from its path, unless your `rule` callback names it. CDK's own SQS target would grant EventBridge the key for every rule instead.
+- **An imported queue key** (`Key.fromKeyArn`) can't be changed by CDK, so capture warns at synth with the statement to add to its policy yourself. Without it no signal is delivered, and the rule's `FailedInvocations` alarm fires.
 
 ## Operating it
 

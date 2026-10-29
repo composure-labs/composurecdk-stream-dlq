@@ -1,13 +1,16 @@
 import { type Alarm, ComparisonOperator, Metric } from "aws-cdk-lib/aws-cloudwatch";
 import type { Rule } from "aws-cdk-lib/aws-events";
 import type { Queue } from "aws-cdk-lib/aws-sqs";
+import { Stack } from "aws-cdk-lib";
 import type { IConstruct } from "constructs";
 import type { Lifecycle, Ref } from "@composurecdk/core";
 import {
   type AlarmConfig,
   type AlarmConfigDefaults,
   type AlarmDefinition,
+  type AlarmName,
   createAlarms,
+  defaultAlarmName,
   resolveAlarmConfig,
   resolveAlarmThresholdBasis,
 } from "@composurecdk/cloudwatch";
@@ -71,7 +74,13 @@ export function captureAlarms(
       ): void => {
         const user = config?.[key];
         if (user === false) return;
-        definitions.push({ key, ...resolveAlarmConfig(user, defaults), ...rest });
+        const resolved = resolveAlarmConfig(user, defaults);
+        definitions.push({
+          key,
+          ...resolved,
+          alarmName: resolved.alarmName ?? captureAlarmName(scope, key),
+          ...rest,
+        });
       };
 
       define("failuresWaiting", DEFAULT_CAPTURE_ALARMS.failuresWaiting, {
@@ -113,6 +122,18 @@ export function captureAlarms(
       return createAlarms(scope, id, definitions);
     },
   };
+}
+
+/**
+ * `<stack>/<path to the capture>/<key>`. composureCDK's default names an alarm
+ * `<stack>/<id>/<key>`, ignoring the constructs between the stack and its
+ * scope, so every capture's "alarms" component would share one name per key.
+ * Interim, until laazyj/composureCDK#649 makes that default include the path.
+ */
+function captureAlarmName(capture: IConstruct, key: string): AlarmName {
+  const { scopes } = capture.node;
+  const below = scopes.slice(scopes.indexOf(Stack.of(capture)) + 1);
+  return defaultAlarmName(capture, below.map((c) => c.node.id).join("/"), key);
 }
 
 /**

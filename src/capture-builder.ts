@@ -1,6 +1,7 @@
-import { Annotations, Duration, Stack, Token } from "aws-cdk-lib";
+import { Annotations, Duration, Names, Stack, Token } from "aws-cdk-lib";
 import type { Alarm } from "aws-cdk-lib/aws-cloudwatch";
 import type { CfnBucket } from "aws-cdk-lib/aws-s3";
+import type { Queue } from "aws-cdk-lib/aws-sqs";
 import { Construct, type IConstruct } from "constructs";
 import { at, compose, type Lifecycle, type Ref, ref } from "@composurecdk/core";
 import { type ITaggedBuilder, taggedBuilder } from "@composurecdk/cloudformation";
@@ -8,13 +9,13 @@ import {
   type IRuleBuilder,
   type RuleBuilderProps,
   type RuleBuilderResult,
-  sqsTarget,
 } from "@composurecdk/events";
 import type { BucketBuilderResult, IBucketBuilder } from "@composurecdk/s3";
 import type { IQueueBuilder, QueueBuilderResult } from "@composurecdk/sqs";
 import { captureAlarms, type StreamDlqCaptureAlarmConfig } from "./capture-alarms.js";
 import { failureBucketDefaults, signalQueueDefaults, signalRuleDefaults } from "./defaults.js";
 import { signalQueueRetentionSeconds } from "./signal-queue.js";
+import { signalTarget } from "./signal-target.js";
 
 /**
  * Configuration for {@link createStreamDlqCaptureBuilder}.
@@ -94,16 +95,14 @@ class StreamDlqCaptureBuilder implements Lifecycle<StreamDlqCaptureResult> {
       pinnedToKeys({
         bucket: configured(failureBucketDefaults(), this.props.bucket).eventBridgeEnabled(true),
         queue: configured(signalQueueDefaults(), this.props.queue),
-        rule: resolvingEventPattern(
-          configured(signalRuleDefaults(), this.props.rule).addTarget(
-            "queue",
-            sqsTarget(ref<QueueBuilderResult>("queue").get("queue")),
-          ),
+        rule: signalRule(
+          configured(signalRuleDefaults(), this.props.rule),
           ref<BucketBuilderResult>("bucket").map(({ bucket }) => ({
             source: ["aws.s3"],
             detailType: ["Object Created"],
             detail: { bucket: { name: [bucket.bucketName] } },
           })),
+          ref<QueueBuilderResult>("queue").get("queue"),
         ),
         alarms: captureAlarms(this.props.recommendedAlarms, {
           queue: ref<QueueBuilderResult>("queue").get("queue"),
@@ -136,18 +135,39 @@ function configured<B extends { copy(): B }>(
 }
 
 /**
- * Builds `rule` with the event pattern `pattern` resolves to.
+ * Builds `rule` with the event pattern `pattern` resolves to and the queue as
+ * its target. With a customer-managed queue key, the rule needs a literal
+ * name for the key's policy to scope to ({@link signalTarget}), so capture
+ * names it from its path unless the consumer has.
  *
  * Interim: the rule builder's `eventPattern` can't take a `ref` yet. Once
- * laazyj/composureCDK#637 lands, this becomes `rule.eventPattern(pattern)`.
+ * laazyj/composureCDK#637 lands, the pattern becomes `rule.eventPattern(pattern)`.
  */
-function resolvingEventPattern(
+function signalRule(
   rule: IRuleBuilder,
   pattern: Ref<NonNullable<RuleBuilderProps["eventPattern"]>>,
+  queue: Ref<Queue>,
 ): Lifecycle<RuleBuilderResult> {
   return {
     build(scope: IConstruct, id: string, context: Record<string, object>): RuleBuilderResult {
-      return rule.eventPattern(pattern.resolve(context)).build(scope, id, context);
+      const resolved = queue.resolve(context);
+      let name: string | undefined;
+      if (resolved.encryptionMasterKey !== undefined) {
+        name =
+          rule.ruleName() ??
+          `${Names.uniqueResourceName(scope, { maxLength: 63 - id.length, separator: "-" })}-${id}`;
+        if (Token.isUnresolved(name)) {
+          throw new Error(
+            "Stream DLQ capture: the signal rule's name is a token, so the queue key's policy " +
+              "can't be scoped to the rule without a dependency cycle. Give it a literal name.",
+          );
+        }
+        rule.ruleName(name);
+      }
+      return rule
+        .eventPattern(pattern.resolve(context))
+        .addTarget("queue", signalTarget(resolved, name))
+        .build(scope, id, context);
     },
   };
 }

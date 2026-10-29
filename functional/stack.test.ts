@@ -14,12 +14,22 @@ describe("the deploy test stack", () => {
   });
 
   it("leaves nothing behind on delete", () => {
-    for (const type of ["AWS::S3::Bucket", "AWS::Logs::LogGroup", "AWS::DynamoDB::GlobalTable"]) {
+    for (const type of [
+      "AWS::S3::Bucket",
+      "AWS::Logs::LogGroup",
+      "AWS::DynamoDB::GlobalTable",
+      "AWS::KMS::Key",
+    ]) {
       template.allResources(type, { DeletionPolicy: "Delete" });
     }
     template.allResourcesProperties("AWS::DynamoDB::GlobalTable", {
       Replicas: Match.arrayWith([Match.objectLike({ DeletionProtectionEnabled: false })]),
     });
+  });
+
+  it("creates one key, with the shortest deletion waiting period", () => {
+    template.resourceCountIs("AWS::KMS::Key", 1);
+    template.hasResourceProperties("AWS::KMS::Key", { PendingWindowInDays: 7 });
   });
 
   it("gives every function a log group in the stack", () => {
