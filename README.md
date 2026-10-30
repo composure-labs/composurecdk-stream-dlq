@@ -1,7 +1,9 @@
-<a href="https://github.com/composure-labs"><picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/composure-labs/.github/main/brand/lockup-labs-dark.svg">
-<img alt="Composure Labs" src="https://raw.githubusercontent.com/composure-labs/.github/main/brand/lockup-labs-light.svg" height="36">
-</picture></a>
+<a href="https://github.com/composure-labs">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/composure-labs/.github/main/brand/lockup-labs-dark.svg">
+    <img alt="Composure Labs" src="https://raw.githubusercontent.com/composure-labs/.github/main/brand/lockup-labs-light.svg" height="36">
+  </picture>
+</a>
 
 # @composure-labs/composurecdk-stream-dlq
 
