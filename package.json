@@ -1,7 +1,7 @@
 {
   "name": "@composure-labs/composurecdk-stream-dlq",
   "version": "0.0.0",
-  "description": "No-loss stream DLQ for Lambda stream consumers, built on composureCDK: S3 failure capture, an SQS depth signal with alarms, and opt-in manual replay.",
+  "description": "No-loss stream DLQ for Lambda stream consumers, built on ComposureCDK: S3 failure capture, an SQS depth signal with alarms, and opt-in manual replay.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/composure-labs/composurecdk-stream-dlq.git"
@@ -16,6 +16,7 @@
     "LICENSE"
   ],
   "keywords": [
+    "composure-labs",
     "composurecdk",
     "composurecdk-pattern",
     "aws",

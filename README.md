@@ -1,3 +1,8 @@
+<a href="https://github.com/composure-labs"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/composure-labs/.github/main/brand/lockup-labs-dark.svg">
+<img alt="Composure Labs" src="https://raw.githubusercontent.com/composure-labs/.github/main/brand/lockup-labs-light.svg" height="36">
+</picture></a>
+
 # @composure-labs/composurecdk-stream-dlq
 
 [![npm version](https://img.shields.io/npm/v/@composure-labs/composurecdk-stream-dlq)](https://www.npmjs.com/package/@composure-labs/composurecdk-stream-dlq)
@@ -6,7 +11,7 @@
 [![CI](https://github.com/composure-labs/composurecdk-stream-dlq/actions/workflows/ci.yml/badge.svg)](https://github.com/composure-labs/composurecdk-stream-dlq/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-0f0d0c)](LICENSE)
 
-**No-loss failure capture for Lambda stream consumers, built on [composureCDK](https://github.com/laazyj/composureCDK).**
+**No-loss failure capture for Lambda stream consumers, built on [ComposureCDK](https://github.com/laazyj/composureCDK).**
 
 > [!WARNING]
 > **Pre-1.0.** Until 1.0, a minor release (0.1 → 0.2) may change the API; a patch release won't. Capture, the `s3OnFailure` destination and customer-managed keys are implemented; the replay function is still to come. The design is in [docs/architecture.md](docs/architecture.md), and the plan in [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623).
@@ -22,7 +27,7 @@ A Lambda consuming DynamoDB Streams (and, later, Kinesis) eventually exhausts it
 npm install @composure-labs/composurecdk-stream-dlq
 ```
 
-npm 7+ and pnpm 8+ install its peers for you. Add any composureCDK package your own code imports, such as `@composurecdk/core` and `@composurecdk/lambda` below, to your `package.json` as well.
+npm 7+ and pnpm 8+ install its peers for you. Add any ComposureCDK package your own code imports, such as `@composurecdk/core` and `@composurecdk/lambda` below, to your `package.json` as well.
 
 Capture is a composed system you add to your own `compose` map, **in the same stack as its processor**, one capture per processor. It's a graph leaf: it never references the processor.
 
@@ -71,11 +76,11 @@ Capture is itself a composed system of four components. It builds everything und
 | Component | What                                                                                                                                                                             |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bucket`  | The failure bucket: versioning off, objects expire after 90 days, EventBridge on, RETAIN, SSE-S3, TLS enforced, public access blocked, and access logs to its own logs bucket    |
-| `queue`   | The signal queue, in composureCDK's `"dlq"` role: 14-day retention, SSE-SQS, 1-minute visibility timeout                                                                         |
+| `queue`   | The signal queue, in ComposureCDK's `"dlq"` role: 14-day retention, SSE-SQS, 1-minute visibility timeout                                                                         |
 | `rule`    | An EventBridge rule on the default bus: `aws.s3` / `Object Created` / this bucket, targeting the queue, described as "Signals each stream failure written to the failure bucket" |
-| `alarms`  | Capture's three alarms (below). The queue's and rule's own composureCDK alarms are off                                                                                           |
+| `alarms`  | Capture's three alarms (below). The queue's and rule's own ComposureCDK alarms are off                                                                                           |
 
-The build result returns each component as its composureCDK builder does: `result.bucket` (`bucket`, `accessLogsBucket`, `alarms`), `result.queue` (`queue`, `alarms`) and `result.rule` (`rule`, `targets`, `alarms`). `result.alarms` holds capture's alarms by key:
+The build result returns each component as its ComposureCDK builder does: `result.bucket` (`bucket`, `accessLogsBucket`, `alarms`), `result.queue` (`queue`, `alarms`) and `result.rule` (`rule`, `targets`, `alarms`). `result.alarms` holds capture's alarms by key:
 
 | Key                 | Fires when                                    | Means                                            |
 | ------------------- | --------------------------------------------- | ------------------------------------------------ |
@@ -119,9 +124,9 @@ createStreamDlqCaptureBuilder()
 
 ## Operating it
 
-- **Configure alarm actions.** Capture creates alarms but no actions. Without them a failure alarms to nobody. Use composureCDK's `alarmActionsPolicy`, or the alarms in the result.
-- **Start at `TRIM_HORIZON`, and bound retries.** With `LATEST`, composureCDK's current default, records written before a new mapping's first poll are never read, so they can never fail and be captured ([laazyj/composureCDK#635](https://github.com/laazyj/composureCDK/issues/635)). Set `retryAttempts` and `maxRecordAge` so a poison batch reaches capture with time to spare.
-- **Make the processor idempotent.** With composureCDK's defaults (bisection and partial batch responses on), a failure object holds just the failing record, but the records that shared its batch run again ([Retries and bisection](docs/architecture.md#retries-and-bisection)).
+- **Configure alarm actions.** Capture creates alarms but no actions. Without them a failure alarms to nobody. Use ComposureCDK's `alarmActionsPolicy`, or the alarms in the result.
+- **Start at `TRIM_HORIZON`, and bound retries.** With `LATEST`, ComposureCDK's current default, records written before a new mapping's first poll are never read, so they can never fail and be captured ([laazyj/composureCDK#635](https://github.com/laazyj/composureCDK/issues/635)). Set `retryAttempts` and `maxRecordAge` so a poison batch reaches capture with time to spare.
+- **Make the processor idempotent.** With ComposureCDK's defaults (bisection and partial batch responses on), a failure object holds just the failing record, but the records that shared its batch run again ([Retries and bisection](docs/architecture.md#retries-and-bisection)).
 - **When the age alarm fires,** the signal is close to expiring. Once SQS deletes it, the alarms clear, but the object stays in the bucket until its lifecycle expiry. List the bucket to find failures older than the queue's retention.
 - **When the rule's `FailedInvocations` alarm fires,** a failure was stored but not signalled. EventBridge doesn't retry a permission error, so fixing the policy brings nothing back. List the bucket by `LastModified` across the alarm's window to find it.
 - **When the processor's dropped-events alarm fires,** a failed batch could not be written to the bucket and is lost from capture; it exists only on the stream until its retention ends ([F1](docs/architecture.md#failure-modes-and-effects)).
@@ -132,28 +137,28 @@ createStreamDlqCaptureBuilder()
 
 ## Where this sits in the ecosystem
 
-This is a **composure-labs** package: first-party, but released independently of composureCDK's lockstep `@composurecdk/*` packages. Inside the `@composure-labs` scope, the name's prefix says what a package builds on:
+This is a **[Composure Labs](https://github.com/composure-labs)** package: first-party, but released independently of ComposureCDK's lockstep `@composurecdk/*` packages. Inside the `@composure-labs` scope, the name's prefix says what a package builds on:
 
 | Prefix          | Builds on                                      |
 | --------------- | ---------------------------------------------- |
-| `composurecdk-` | composureCDK's builders (and so `aws-cdk-lib`) |
+| `composurecdk-` | ComposureCDK's builders (and so `aws-cdk-lib`) |
 | `cdk-`          | plain `aws-cdk-lib`                            |
 | _(none)_        | nothing IaC-specific                           |
 
-Community packages built on composureCDK follow the same rule under their own scope, or unscoped: `@acme/composurecdk-<name>` or `composurecdk-<name>`.
+Community packages built on ComposureCDK follow the same rule under their own scope, or unscoped: `@acme/composurecdk-<name>` or `composurecdk-<name>`.
 
 ## Compatibility
 
 | Peer              | Range                                                                                                |
 | ----------------- | ---------------------------------------------------------------------------------------------------- |
-| `@composurecdk/*` | `^0.11.0`, widened as each new composureCDK minor passes this repo's CI                              |
+| `@composurecdk/*` | `^0.11.0`, widened as each new ComposureCDK minor passes this repo's CI                              |
 | `aws-cdk-lib`     | `^2.184.0`, the release that added S3 on-failure destinations for DynamoDB and Kinesis event sources |
 | `constructs`      | `^10.8.1`, `@composurecdk/core`'s floor                                                              |
 | Node.js           | `>=20`                                                                                               |
 
-composureCDK is pre-1.0, so `^0.11.0` means `<0.12.0`: every composureCDK minor would otherwise make this package uninstallable beside it. Dependabot widens the peer range instead (`^0.11.0 || ^0.12.0`) once CI passes against the new release. CI also tests the oldest end of every range, so a widened range stays honest. **Support policy:** the latest composureCDK minor, plus any older minor still in the range.
+ComposureCDK is pre-1.0, so `^0.11.0` means `<0.12.0`: every ComposureCDK minor would otherwise make this package uninstallable beside it. Dependabot widens the peer range instead (`^0.11.0 || ^0.12.0`) once CI passes against the new release. CI also tests the oldest end of every range, so a widened range stays honest. **Support policy:** the latest ComposureCDK minor, plus any older minor still in the range.
 
-Ships ESM and CommonJS from one source, built by [tshy](https://github.com/isaacs/tshy), like composureCDK's own packages.
+Ships ESM and CommonJS from one source, built by [tshy](https://github.com/isaacs/tshy), like ComposureCDK's own packages.
 
 ## Contributing
 

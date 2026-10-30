@@ -15,7 +15,7 @@ The key costs $1 a month, billed hourly, so `cleanDeskPolicy` deletes it with th
 
 Each step polls every 15 seconds and fails the run when it times out. Queue counts lag by 30 seconds or more, and a new mapping takes minutes to start reading, so a full run takes 10 to 20 minutes.
 
-`cleanDeskPolicy` (a trimmed copy of composureCDK's) makes everything deletable with the stack, including the failure bucket that capture retains. **Never apply it to a real capture.**
+`cleanDeskPolicy` (a trimmed copy of ComposureCDK's) makes everything deletable with the stack, including the failure bucket that capture retains. **Never apply it to a real capture.**
 
 ## Running it
 
