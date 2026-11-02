@@ -57,9 +57,11 @@ updates:
         patterns:
           - "*"
 
-  # zizmor, which CI installs from this hash-pinned lock.
+  # zizmor, which CI installs from this hash-pinned lock. Not under .github/:
+  # Dependabot's service rejected the uv PR there with "invalid or unauthorized
+  # changes" (#14).
   - package-ecosystem: uv
-    directory: /.github/zizmor
+    directory: /scripts/zizmor
     schedule:
       interval: weekly
     cooldown:
