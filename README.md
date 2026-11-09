@@ -188,12 +188,12 @@ Community packages built on ComposureCDK follow the same rule under their own sc
 
 | Peer              | Range                                                                                                |
 | ----------------- | ---------------------------------------------------------------------------------------------------- |
-| `@composurecdk/*` | `^0.11.0`, widened as each new ComposureCDK minor passes this repo's CI                              |
+| `@composurecdk/*` | `^0.11.0 \|\| ^0.12.0`, widened as each new ComposureCDK minor passes this repo's CI                 |
 | `aws-cdk-lib`     | `^2.184.0`, the release that added S3 on-failure destinations for DynamoDB and Kinesis event sources |
 | `constructs`      | `^10.8.1`, `@composurecdk/core`'s floor                                                              |
 | Node.js           | `>=20`                                                                                               |
 
-ComposureCDK is pre-1.0, so `^0.11.0` means `<0.12.0`: every ComposureCDK minor would otherwise make this package uninstallable beside it. Dependabot widens the peer range instead (`^0.11.0 || ^0.12.0`) once CI passes against the new release. CI also tests the oldest end of every range, so a widened range stays honest. **Support policy:** the latest ComposureCDK minor, plus any older minor still in the range.
+ComposureCDK is pre-1.0, so `^0.11.0` means `<0.12.0`: every ComposureCDK minor would otherwise make this package uninstallable beside it. Dependabot widens the peer range instead (adding `|| ^0.13.0`) once CI passes against the new release. CI also tests the oldest end of every range, so a widened range stays honest. **Support policy:** the latest ComposureCDK minor, plus any older minor still in the range.
 
 Ships ESM and CommonJS from one source, built by [tshy](https://github.com/isaacs/tshy), like ComposureCDK's own packages.
 
