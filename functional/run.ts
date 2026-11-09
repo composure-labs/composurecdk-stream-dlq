@@ -1,13 +1,15 @@
 // Drives the deployed deploy-test stack through one failure, end to end:
 // write a record, the processor fails it, the batch lands in the failure
 // bucket, the signal reaches the queue, and the depth alarm fires; then drain
-// the queue and wait for the alarm to clear. Exits non-zero on the first step
-// that times out. See functional/README.md.
+// the queue and wait for the alarm to clear. A record written to the Kinesis
+// stream takes the same path into its own capture. Exits non-zero on the
+// first step that times out. See functional/README.md.
 import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import { CloudWatchClient, DescribeAlarmsCommand } from "@aws-sdk/client-cloudwatch";
 import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { KinesisClient, PutRecordCommand } from "@aws-sdk/client-kinesis";
 import { LambdaClient, ListEventSourceMappingsCommand } from "@aws-sdk/client-lambda";
-import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { DeleteMessageCommand, ReceiveMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { setTimeout as delay } from "node:timers/promises";
 import { OUTPUTS, type Outputs, STACK_NAME } from "./stack.ts";
@@ -75,6 +77,18 @@ function waitForFailureObject(label: string, bucket: string, since: number): Pro
   });
 }
 
+/** Fails the run unless the failure object holds `batchInfo`, which names its source. */
+async function expectBatchInfo(
+  bucket: string,
+  key: string,
+  batchInfo: "DDBStreamBatchInfo" | "KinesisBatchInfo",
+): Promise<void> {
+  const { Body } = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const failure = JSON.parse((await Body?.transformToString()) ?? "{}") as object;
+  if (!(batchInfo in failure)) throw new Error(`${key} has no ${batchInfo}`);
+  console.log(`✓ ${key} holds ${batchInfo}`);
+}
+
 // The signal is the bucket's Object Created event, so it names the object.
 // Deleting it is what an operator does once the failure is dealt with.
 function receiveAndDeleteSignal(label: string, queueUrl: string, key: string): Promise<true> {
@@ -98,40 +112,61 @@ function receiveAndDeleteSignal(label: string, queueUrl: string, key: string): P
 // A new mapping takes minutes to start reading. TRIM_HORIZON means a record
 // written before then is still read, but waiting keeps the timings honest.
 await Promise.all(
-  [outputs.FunctionName, outputs.KeyedFunctionName].map((functionName) =>
-    waitFor(`event source mapping for ${functionName} enabled`, 10 * MINUTE, async () => {
-      const { EventSourceMappings } = await lambda.send(
-        new ListEventSourceMappingsCommand({ FunctionName: functionName }),
-      );
-      return EventSourceMappings?.[0]?.State === "Enabled";
-    }),
+  [outputs.FunctionName, outputs.KeyedFunctionName, outputs.KinesisFunctionName].map(
+    (functionName) =>
+      waitFor(`event source mapping for ${functionName} enabled`, 10 * MINUTE, async () => {
+        const { EventSourceMappings } = await lambda.send(
+          new ListEventSourceMappingsCommand({ FunctionName: functionName }),
+        );
+        return EventSourceMappings?.[0]?.State === "Enabled";
+      }),
   ),
 );
 
 const pk = `deploy-test-${new Date().toISOString()}`;
-await new DynamoDBClient().send(
-  new PutItemCommand({ TableName: outputs.TableName, Item: { pk: { S: pk } } }),
-);
+await Promise.all([
+  new DynamoDBClient().send(
+    new PutItemCommand({ TableName: outputs.TableName, Item: { pk: { S: pk } } }),
+  ),
+  new KinesisClient().send(
+    new PutRecordCommand({
+      StreamName: outputs.StreamName,
+      PartitionKey: pk,
+      Data: new TextEncoder().encode(JSON.stringify({ pk })),
+    }),
+  ),
+]);
 // Only objects written after this count, so a rerun against a stack that
 // wasn't destroyed can't pass on an earlier run's failure. Allows 2 s of skew.
 const written = Date.now() - 2_000;
-console.log(`✓ wrote ${pk}`);
+console.log(`✓ wrote ${pk} to the table and the stream`);
 
-// The keyed capture runs alongside the main flow, so a failure there surfaces
-// without waiting the main flow out.
-const keyed = waitForFailureObject("keyed ", outputs.KeyedBucketName, written).then((key) =>
-  receiveAndDeleteSignal("keyed ", outputs.KeyedQueueUrl, key),
-);
+// The keyed and Kinesis captures run alongside the main flow, so a failure
+// there surfaces without waiting the main flow out.
+async function sideCapture(
+  label: string,
+  bucket: string,
+  queueUrl: string,
+  batchInfo: "DDBStreamBatchInfo" | "KinesisBatchInfo",
+): Promise<true> {
+  const key = await waitForFailureObject(label, bucket, written);
+  await expectBatchInfo(bucket, key, batchInfo);
+  return receiveAndDeleteSignal(label, queueUrl, key);
+}
 
 async function main(): Promise<void> {
   const key = await waitForFailureObject("", outputs.BucketName, written);
-  console.log(`  ${key}`);
+  await expectBatchInfo(outputs.BucketName, key, "DDBStreamBatchInfo");
   await waitForAlarm("ALARM", 10 * MINUTE);
   // Deleting the signal lets the alarm clear.
   await receiveAndDeleteSignal("", outputs.QueueUrl, key);
   await waitForAlarm("OK", 15 * MINUTE);
 }
 
-await Promise.all([main(), keyed]);
+await Promise.all([
+  main(),
+  sideCapture("keyed ", outputs.KeyedBucketName, outputs.KeyedQueueUrl, "DDBStreamBatchInfo"),
+  sideCapture("Kinesis ", outputs.KinesisBucketName, outputs.KinesisQueueUrl, "KinesisBatchInfo"),
+]);
 
 console.log("Deploy test passed.");

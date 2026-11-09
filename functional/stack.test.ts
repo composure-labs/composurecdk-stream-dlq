@@ -19,6 +19,7 @@ describe("the deploy test stack", () => {
       "AWS::Logs::LogGroup",
       "AWS::DynamoDB::GlobalTable",
       "AWS::KMS::Key",
+      "AWS::Kinesis::Stream",
     ]) {
       template.allResources(type, { DeletionPolicy: "Delete" });
     }

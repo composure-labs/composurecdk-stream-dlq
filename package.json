@@ -24,6 +24,7 @@
     "aws-cdk",
     "aws-lambda",
     "dynamodb-streams",
+    "kinesis",
     "dead-letter-queue"
   ],
   "author": "Jason Duffett (https://github.com/laazyj)",
@@ -76,6 +77,7 @@
     "@aws-sdk/client-cloudformation": "^3.1156.0",
     "@aws-sdk/client-cloudwatch": "^3.1156.0",
     "@aws-sdk/client-dynamodb": "^3.1156.0",
+    "@aws-sdk/client-kinesis": "^3.1156.0",
     "@aws-sdk/client-lambda": "^3.1156.0",
     "@aws-sdk/client-s3": "^3.1156.0",
     "@aws-sdk/client-sqs": "^3.1156.0",
@@ -85,6 +87,7 @@
     "@composurecdk/dynamodb": "^0.11.1",
     "@composurecdk/eslint-plugin": "^0.11.0",
     "@composurecdk/events": "^0.11.0",
+    "@composurecdk/kinesis": "^0.11.2",
     "@composurecdk/kms": "^0.11.0",
     "@composurecdk/lambda": "^0.11.0",
     "@composurecdk/s3": "^0.11.0",
