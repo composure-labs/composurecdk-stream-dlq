@@ -20,7 +20,12 @@ import type { StreamDlqCaptureResult } from "./capture-builder.js";
  * `kms:GenerateDataKey` when the bucket has a customer-managed key
  * (architecture D8).
  *
+ * It works the same for every stream source with an S3 on-failure
+ * destination: ComposureCDK's `dynamoEventSource`, `kinesisEventSource` and
+ * `kinesisConsumerEventSource`, or CDK's own sources given a built capture.
+ *
  * @param capture - The capture builder's result, usually `ref("failures")`.
+ *   A built result gives a destination CDK's own event sources accept.
  *
  * @example
  * ```ts
@@ -32,6 +37,10 @@ import type { StreamDlqCaptureResult } from "./capture-builder.js";
  *
  * @see https://docs.aws.amazon.com/lambda/latest/dg/invocation-async-retain-records.html
  */
+export function s3OnFailure(capture: StreamDlqCaptureResult): IEventSourceDlq;
+export function s3OnFailure(
+  capture: Resolvable<StreamDlqCaptureResult>,
+): Resolvable<IEventSourceDlq>;
 export function s3OnFailure(
   capture: Resolvable<StreamDlqCaptureResult>,
 ): Resolvable<IEventSourceDlq> {
