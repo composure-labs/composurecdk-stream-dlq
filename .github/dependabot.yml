@@ -20,7 +20,7 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
-    # The compat loop: widens mirrored peers (`^0.11.0 || ^0.12.0`) on each new
+    # The compat loop: widens mirrored peers (`^0.13.0 || ^0.14.0`) on each new
     # composureCDK minor. See scripts/check-peer-mirror.mjs.
     versioning-strategy: widen
     ignore:
