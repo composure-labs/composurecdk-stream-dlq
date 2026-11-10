@@ -16,9 +16,9 @@
 **No-loss failure capture for Lambda stream consumers, built on [ComposureCDK](https://github.com/laazyj/composureCDK).**
 
 > [!WARNING]
-> **Pre-1.0.** Until 1.0, a minor release (0.1 → 0.2) may change the API; a patch release won't. Capture, the `s3OnFailure` destination and customer-managed keys are implemented; the replay function is still to come. The design is in [docs/architecture.md](docs/architecture.md), and the plan in [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623).
+> **Pre-1.0.** Until 1.0, a minor release (0.1 → 0.2) may change the API; a patch release won't. Capture, the `s3OnFailure` destination and customer-managed keys are implemented, for DynamoDB Streams and Kinesis Data Streams; the replay function is still to come. The design is in [docs/architecture.md](docs/architecture.md), and the plan in [laazyj/composureCDK#623](https://github.com/laazyj/composureCDK/issues/623).
 
-A Lambda consuming DynamoDB Streams (and, later, Kinesis) eventually exhausts its retries on some batch. The records only live for the stream's retention window, so the failed batch has to be captured somewhere durable before that window closes, and the on-call has to hear about it with hours to spare. This package provides:
+A Lambda consuming a DynamoDB stream or a Kinesis data stream eventually exhausts its retries on some batch. The records only live for the stream's retention window, so the failed batch has to be captured somewhere durable before that window closes, and the on-call has to hear about it with hours to spare. This package provides:
 
 - **Capture:** an S3 bucket for the event source mapping's on-failure destination, holding the full failed batch, and an SQS signal queue fed from the bucket through EventBridge. The queue gives you a native 1-minute depth gauge to alarm on.
 - **Recovery (planned, opt-in):** a manual-only replay function that re-invokes the processor with the captured payload, or a least-privilege grant so you can plug in your own recovery.
@@ -70,6 +70,41 @@ compose(
 ```
 
 `s3OnFailure(ref("failures"))` names the failure bucket as the mapping's on-failure destination, and grants the processor only what Lambda needs to write a failure there, where CDK's `S3OnFailureDestination` grants read and write ([D8](docs/architecture.md#decisions)).
+
+### Kinesis Data Streams
+
+A Kinesis processor takes capture the same way, through `kinesisEventSource`, or `kinesisConsumerEventSource` for an enhanced fan-out consumer. Both need `@composurecdk/lambda` 0.12 or later.
+
+```ts
+import { createStreamBuilder, type StreamBuilderResult } from "@composurecdk/kinesis";
+import { createFunctionBuilder, kinesisEventSource } from "@composurecdk/lambda";
+
+compose(
+  {
+    events: createStreamBuilder(),
+
+    failures: createStreamDlqCaptureBuilder(),
+
+    processor: createFunctionBuilder()
+      .runtime(Runtime.NODEJS_22_X)
+      .handler("index.handler")
+      .code(Code.fromAsset("lambda"))
+      .addEventSource(
+        "events",
+        kinesisEventSource(ref<StreamBuilderResult>("events").get("stream"), {
+          startingPosition: StartingPosition.TRIM_HORIZON,
+          retryAttempts: 3,
+          onFailure: s3OnFailure(ref("failures")),
+        }),
+      ),
+  },
+  { events: [], failures: [], processor: ["events", "failures"] },
+);
+```
+
+Capture behaves the same for both sources. A failure object holds `KinesisBatchInfo` where a DynamoDB one holds `DDBStreamBatchInfo` ([What a failure object contains](docs/architecture.md#what-a-failure-object-contains)). A Kinesis stream keeps records for 24 hours unless you set its retention; `@composurecdk/kinesis` sets 7 days.
+
+`s3OnFailure` also takes a built capture rather than a `ref`, and then returns a destination that CDK's own `KinesisEventSource` and `DynamoEventSource` accept.
 
 ## What capture builds
 
@@ -153,12 +188,12 @@ Community packages built on ComposureCDK follow the same rule under their own sc
 
 | Peer              | Range                                                                                                |
 | ----------------- | ---------------------------------------------------------------------------------------------------- |
-| `@composurecdk/*` | `^0.11.0`, widened as each new ComposureCDK minor passes this repo's CI                              |
+| `@composurecdk/*` | `^0.11.0 \|\| ^0.12.0`, widened as each new ComposureCDK minor passes this repo's CI                 |
 | `aws-cdk-lib`     | `^2.184.0`, the release that added S3 on-failure destinations for DynamoDB and Kinesis event sources |
 | `constructs`      | `^10.8.1`, `@composurecdk/core`'s floor                                                              |
 | Node.js           | `>=20`                                                                                               |
 
-ComposureCDK is pre-1.0, so `^0.11.0` means `<0.12.0`: every ComposureCDK minor would otherwise make this package uninstallable beside it. Dependabot widens the peer range instead (`^0.11.0 || ^0.12.0`) once CI passes against the new release. CI also tests the oldest end of every range, so a widened range stays honest. **Support policy:** the latest ComposureCDK minor, plus any older minor still in the range.
+ComposureCDK is pre-1.0, so `^0.11.0` means `<0.12.0`: every ComposureCDK minor would otherwise make this package uninstallable beside it. Dependabot widens the peer range instead (adding `|| ^0.13.0`) once CI passes against the new release. CI also tests the oldest end of every range, so a widened range stays honest. **Support policy:** the latest ComposureCDK minor, plus any older minor still in the range.
 
 Ships ESM and CommonJS from one source, built by [tshy](https://github.com/isaacs/tshy), like ComposureCDK's own packages.
 

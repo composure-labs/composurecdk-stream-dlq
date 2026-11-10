@@ -6,7 +6,7 @@ The design comes from [laazyj/composureCDK#623](https://github.com/laazyj/compos
 
 ## The problem
 
-A Lambda function consuming a DynamoDB stream or a Kinesis data stream eventually exhausts its retries on some batch. Those records only exist for the stream's retention window, 24 hours for DynamoDB, so the failed batch has to be stored durably before the window closes. The on-call also has to hear about it while there is still time to act.
+A Lambda function consuming a DynamoDB stream or a Kinesis data stream eventually exhausts its retries on some batch. Those records only exist for the stream's retention window, 24 hours for DynamoDB and, by default, for Kinesis, so the failed batch has to be stored durably before the window closes. The on-call also has to hear about it while there is still time to act.
 
 The obvious wirings each fail one half of that:
 
@@ -95,7 +95,7 @@ The key holds no characters that need URL-encoding, and it embeds the write time
 
 ## Retries and bisection
 
-ComposureCDK's `dynamoEventSource` turns on `bisectBatchOnError` and `reportBatchItemFailures` by default. The spike wrote ten records, one of them poison, under those defaults and `retryAttempts: 2`, once with a processor that throws and once with one that reports the record:
+ComposureCDK's stream event sources, `dynamoEventSource` and `kinesisEventSource`, turn on `bisectBatchOnError` and `reportBatchItemFailures` by default. The spike wrote ten records to a DynamoDB stream, one of them poison, under those defaults and `retryAttempts: 2`, once with a processor that throws and once with one that reports the record:
 
 - **one object**, holding **only the poison record**, in both modes. No record that never failed reached the bucket;
 - the poison record ran four times: once in its first batch, then three times alone (`approximateInvokeCount: 3` in the object);
@@ -255,18 +255,17 @@ The system has several moving parts, so this section follows the shape of a **Fa
 | D8  | `s3OnFailure(ref)` grants only `s3:PutObject` and `s3:ListBucket` on the failure bucket (plus `kms:GenerateDataKey` with a key) | CDK's `S3OnFailureDestination` grants read and write, so the processor could read and delete every captured failure                                                                                                                                       | Lambda docs                                       |
 | D9  | One capture per processor                                                                                                       | Clear ownership; alarms map to one consumer                                                                                                                                                                                                               | Maintainer decision                               |
 | D10 | Capture deploys alongside the processor, never in a separate persistence stack                                                  | The failure bucket holds transient runtime state (until resolved, replayed or discarded), not long-term storage. Splitting the failure path across stacks adds ways for it to break                                                                       | Maintainer decision; supersedes #623's "pillar 5" |
-| D11 | DynamoDB Streams first; Kinesis supported by the same design                                                                    | The S3 on-failure destination and object format are shared; Kinesis waits on laazyj/composureCDK#120                                                                                                                                                      | Issue #623                                        |
+| D11 | DynamoDB Streams and Kinesis Data Streams, through the same design                                                              | The S3 on-failure destination, its grant and the object format are shared. Kinesis needs `kinesisEventSource`, in `@composurecdk/lambda` 0.12 (laazyj/composureCDK#120)                                                                                   | Issue #623                                        |
 | D12 | Switch EventBridge on through CDK's `BucketNotificationsHandler`                                                                | Idiomatic, and it keeps the consumer's own CDK notifications on the bucket safe                                                                                                                                                                           | Spike follow-up                                   |
 | D13 | aws-cdk-lib peer floor `^2.184.0`                                                                                               | The release that added S3 on-failure destinations for DynamoDB and Kinesis. Proven by deploying on it                                                                                                                                                     | Spike §6                                          |
 
 ## Testing
 
 - **Unit and synth tests** in CI: construct paths, defaults, the lifetime guard and the grant.
-- **A functional test before every release** ([functional/](../functional/README.md)), like ComposureCDK's sandbox deploy. It deploys a capture stack to the sandbox account, waits for the event source mapping to be `Enabled`, forces one failure, and checks that the object lands, the signal arrives, and the depth alarm fires and then clears. Then it tears everything down.
+- **A functional test before every release** ([functional/](../functional/README.md)), like ComposureCDK's sandbox deploy. It deploys a capture stack to the sandbox account, waits for the event source mapping to be `Enabled`, forces one failure, and checks that the object lands, the signal arrives, and the depth alarm fires and then clears. A Kinesis processor does the same into its own capture, so both sources are proven. Then it tears everything down.
   - Teardown uses a copy of ComposureCDK's `cleanDeskPolicy`. Any extension it needs is raised as a PR on both copies.
   - The spike showed the test must poll: queue counts lag by 30 s or more, and a new mapping takes minutes to start reading.
 
 ## Open items
 
-- Kinesis, once laazyj/composureCDK#120 lands.
 - Phase 2: the reference replay function, prototyped in the spike (`drain()`, with B1 and B2 from the plan). It must be idempotent: see [Retries and bisection](#retries-and-bisection).

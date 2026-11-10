@@ -13,6 +13,7 @@ import {
   Stack,
 } from "aws-cdk-lib";
 import { TableV2, type TablePropsV2 } from "aws-cdk-lib/aws-dynamodb";
+import { Stream, type StreamProps } from "aws-cdk-lib/aws-kinesis";
 import { Key, type KeyProps } from "aws-cdk-lib/aws-kms";
 import { CfnFunction } from "aws-cdk-lib/aws-lambda";
 import { LogGroup, type LogGroupProps, RetentionDays } from "aws-cdk-lib/aws-logs";
@@ -52,6 +53,15 @@ class TableV2RemovalPolicyInjector implements IPropertyInjector {
 
   inject(originalProps: TablePropsV2): TablePropsV2 {
     return { ...originalProps, removalPolicy: RemovalPolicy.DESTROY, deletionProtection: false };
+  }
+}
+
+/** Destroys Kinesis streams with the stack. `@composurecdk/kinesis` defaults to RETAIN. */
+class StreamRemovalPolicyInjector implements IPropertyInjector {
+  readonly constructUniqueId = Stream.PROPERTY_INJECTION_ID;
+
+  inject(originalProps: StreamProps): StreamProps {
+    return { ...originalProps, removalPolicy: RemovalPolicy.DESTROY };
   }
 }
 
@@ -174,6 +184,7 @@ export function cleanDeskPolicy(scope: IConstruct): void {
   injectors.add(new LogGroupRemovalPolicyInjector());
   injectors.add(new TableV2RemovalPolicyInjector());
   injectors.add(new KeyRemovalPolicyInjector());
+  injectors.add(new StreamRemovalPolicyInjector());
 
   Aspects.of(scope).add(new DisableSourceLoggingOnDeleteAspect());
   Aspects.of(scope).add(new FunctionLogGroupAspect());
