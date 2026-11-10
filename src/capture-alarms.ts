@@ -1,14 +1,12 @@
 import { type Alarm, ComparisonOperator, Metric } from "aws-cdk-lib/aws-cloudwatch";
 import type { Rule } from "aws-cdk-lib/aws-events";
 import type { Queue } from "aws-cdk-lib/aws-sqs";
-import { Stack } from "aws-cdk-lib";
 import type { IConstruct } from "constructs";
 import type { Lifecycle, Ref } from "@composurecdk/core";
 import {
   type AlarmConfig,
   type AlarmConfigDefaults,
   type AlarmDefinition,
-  type AlarmName,
   createAlarms,
   defaultAlarmName,
   resolveAlarmConfig,
@@ -78,7 +76,9 @@ export function captureAlarms(
         definitions.push({
           key,
           ...resolved,
-          alarmName: resolved.alarmName ?? captureAlarmName(scope, key),
+          // The empty id keeps the deployed `<stack>/<path to the capture>/<key>`
+          // names, without the "alarms" component's id. Renaming replaces alarms.
+          alarmName: resolved.alarmName ?? defaultAlarmName(scope, "", key),
           ...rest,
         });
       };
@@ -122,18 +122,6 @@ export function captureAlarms(
       return createAlarms(scope, id, definitions);
     },
   };
-}
-
-/**
- * `<stack>/<path to the capture>/<key>`. composureCDK's default names an alarm
- * `<stack>/<id>/<key>`, ignoring the constructs between the stack and its
- * scope, so every capture's "alarms" component would share one name per key.
- * Interim, until laazyj/composureCDK#649 makes that default include the path.
- */
-function captureAlarmName(capture: IConstruct, key: string): AlarmName {
-  const { scopes } = capture.node;
-  const below = scopes.slice(scopes.indexOf(Stack.of(capture)) + 1);
-  return defaultAlarmName(capture, below.map((c) => c.node.id).join("/"), key);
 }
 
 /**

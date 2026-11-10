@@ -9,7 +9,7 @@
  * devDependency requirement it is bumping (dependabot-core,
  * npm_and_yarn/file_updater/package_json_updater.rb). With
  * `versioning-strategy: widen`, a new composureCDK minor turns the
- * devDependency `^0.11.0` into `^0.11.0 || ^0.12.0` and carries the peer with
+ * devDependency `^0.13.0` into `^0.13.0 || ^0.14.0` and carries the peer with
  * it. If the two strings ever drift apart, Dependabot keeps bumping the
  * devDependency, tests pass, and the published peer range silently stops
  * admitting new composureCDK releases. This check turns that into a red build.

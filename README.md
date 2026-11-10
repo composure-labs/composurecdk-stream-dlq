@@ -73,7 +73,7 @@ compose(
 
 ### Kinesis Data Streams
 
-A Kinesis processor takes capture the same way, through `kinesisEventSource`, or `kinesisConsumerEventSource` for an enhanced fan-out consumer. Both need `@composurecdk/lambda` 0.12 or later.
+A Kinesis processor takes capture the same way, through `kinesisEventSource`, or `kinesisConsumerEventSource` for an enhanced fan-out consumer.
 
 ```ts
 import { createStreamBuilder, type StreamBuilderResult } from "@composurecdk/kinesis";
@@ -186,14 +186,14 @@ Community packages built on ComposureCDK follow the same rule under their own sc
 
 ## Compatibility
 
-| Peer              | Range                                                                                                |
-| ----------------- | ---------------------------------------------------------------------------------------------------- |
-| `@composurecdk/*` | `^0.11.0 \|\| ^0.12.0`, widened as each new ComposureCDK minor passes this repo's CI                 |
-| `aws-cdk-lib`     | `^2.184.0`, the release that added S3 on-failure destinations for DynamoDB and Kinesis event sources |
-| `constructs`      | `^10.8.1`, `@composurecdk/core`'s floor                                                              |
-| Node.js           | `>=20`                                                                                               |
+| Peer              | Range                                                                                                      |
+| ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| `@composurecdk/*` | `^0.13.0`, the release that added `scoped()`, widened as each new ComposureCDK minor passes this repo's CI |
+| `aws-cdk-lib`     | `^2.184.0`, the release that added S3 on-failure destinations for DynamoDB and Kinesis event sources       |
+| `constructs`      | `^10.8.1`, `@composurecdk/core`'s floor                                                                    |
+| Node.js           | `>=20`                                                                                                     |
 
-ComposureCDK is pre-1.0, so `^0.11.0` means `<0.12.0`: every ComposureCDK minor would otherwise make this package uninstallable beside it. Dependabot widens the peer range instead (adding `|| ^0.13.0`) once CI passes against the new release. CI also tests the oldest end of every range, so a widened range stays honest. **Support policy:** the latest ComposureCDK minor, plus any older minor still in the range.
+ComposureCDK is pre-1.0, so `^0.13.0` means `<0.14.0`: every ComposureCDK minor would otherwise make this package uninstallable beside it. Dependabot widens the peer range instead (adding `|| ^0.14.0`) once CI passes against the new release. CI also tests the oldest end of every range, so a widened range stays honest. **Support policy:** the latest ComposureCDK minor, plus any older minor still in the range.
 
 Ships ESM and CommonJS from one source, built by [tshy](https://github.com/isaacs/tshy), like ComposureCDK's own packages.
 

@@ -6,9 +6,9 @@
  * line, for CI's "Lowest supported" job.
  *
  * The lockfile always resolves the newest version in range, so without this a
- * widened range (`^0.11.0 || ^0.12.0`) is only ever tested at its new end.
+ * widened range (`^0.13.0 || ^0.14.0`) is only ever tested at its new end.
  *
- * - `@composurecdk/*`: the first comparator set, as a range (`^0.11.0`), so the
+ * - `@composurecdk/*`: the first comparator set, as a range (`^0.13.0`), so the
  *   oldest supported minor is tested at its latest patch.
  * - everything else (`aws-cdk-lib`, `constructs`): the exact lower bound
  *   (`2.184.0`). That is the declared floor, which ADR-0008 says must be proven
