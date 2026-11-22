@@ -94,7 +94,7 @@
     "@composurecdk/sqs": "^0.13.0",
     "@eslint-community/eslint-plugin-eslint-comments": "^4.8.1",
     "@eslint/js": "^10.0.1",
-    "@kjanat/actionlint": "1.17.0",
+    "@kjanat/actionlint": "1.17.1",
     "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.3",
     "aws-cdk": "^2.1146.1",
